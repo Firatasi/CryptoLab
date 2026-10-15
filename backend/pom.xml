@@ -24,11 +24,14 @@
 
     <!-- Ana projeye bağlı modüller -->
     <modules>
+        <module>api-gateway</module>
         <module>discovery-server</module>
         <module>identity-service</module>
         <module>market-data-service</module>
         <module>simulation-service</module>
         <module>strategy-service</module>
+        <module>reporting-service</module>
+        <module>account-service</module>
     </modules>
 
     <!-- Modüllerin devralacağı ortak ayarlar -->
