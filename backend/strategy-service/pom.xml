@@ -11,20 +11,35 @@
   <artifactId>strategy-service</artifactId>
   <name>CryptoLab Strategy Service</name>
   <dependencies>
-    <!-- HTTP endpoint altyapÄ±sÄ± -->
+    <!-- HTTP endpoint altyapısı -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-webmvc</artifactId>
     </dependency>
-    <!-- Eureka'ya kayÄ±t ve servis keÅŸfi -->
+
+    <!-- Eureka'ya kayıt ve servis keeşfi -->
     <dependency>
       <groupId>org.springframework.cloud</groupId>
       <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
     </dependency>
-    <!-- SaÄŸlÄ±k kontrolÃ¼ -->
+
+    <!-- Sağlık Kontrolü -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- Validation -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- Test -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
     </dependency>
   </dependencies>
   <build>

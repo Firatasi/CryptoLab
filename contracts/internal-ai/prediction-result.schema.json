@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "AI analiz sonucunun sözleşmesi. READY olmayan sonuçlarda sayısal tahmin üretilmez.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "requestId",
+    "quality",
+    "reasonCodes",
+    "modelBundleId",
+    "featureVersion",
+    "featureSchemaHash",
+    "featureSnapshotId",
+    "asOf",
+    "horizonSeconds",
+    "predictedLogReturn",
+    "volatilityEstimate",
+    "calibrationVersion",
+    "observedFeatureSummary",
+    "latencyMs"
+  ],
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "quality": {
+      "enum": [
+        "READY",
+        "INSUFFICIENT_DATA",
+        "OUT_OF_DOMAIN",
+        "STALE_DATA"
+      ]
+    },
+    "reasonCodes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "modelBundleId": {
+      "$comment": "Sonucu üreten model paketinin kimliği.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "featureVersion": {
+      "type": "string"
+    },
+    "featureSchemaHash": {
+      "type": "string"
+    },
+    "featureSnapshotId": {
+      "$comment": "Analizde kullanılan özellik verisinin anlık görüntü kimliği.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "asOf": {
+      "$comment": "Analizin esas aldığı zaman; örneklerde UTC kullanılır.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "horizonSeconds": {
+      "$comment": "Tahmin ufku: 1 dakika, 15 dakika, 1 saat, 1 gün veya 1 hafta.",
+      "enum": [60, 900, 3600, 86400, 604800]
+    },
+    "predictedLogReturn": {
+      "$comment": "Logaritmik getiri tahmini; doğrudan yüzde değeri değildir.",
+      "type": ["number", "null"]
+    },
+    "volatilityEstimate": {
+      "type": ["number", "null"]
+    },
+    "calibrationVersion": {
+      "type": ["string", "null"]
+    },
+    "observedFeatureSummary": {
+      "type": "object"
+    },
+    "latencyMs": {
+      "$comment": "Sonucun üretilme gecikmesi, milisaniye.",
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "Tahmin alanlarının tipi, kalite durumuna göre daraltılır.",
+      "if": {
+        "properties": {
+          "quality": {
+            "const": "READY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "predictedLogReturn": {
+            "type": "number"
+          },
+          "volatilityEstimate": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "predictedLogReturn": {
+            "type": "null"
+          },
+          "volatilityEstimate": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}
