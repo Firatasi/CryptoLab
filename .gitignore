@@ -1,13 +1,409 @@
-# IDE
+# =============================================================================
+
+# CryptoLab Monorepo — Kapsamli .gitignore (Backend + Frontend + AI + Infra)
+
+# =============================================================================
+
+
+
+# -----------------------------------------------------------------------------
+
+# 1. GUVENLIK, SIRLAR VE ORTAM DEGISKENLERI (KRITIK)
+
+# -----------------------------------------------------------------------------
+
+.env
+
+.env.*
+
+*.env
+
+!**/.env.example
+
+!**/.env.template
+
+!**/.env.sample
+
+
+
+# Sertifika, Private Key ve Keystore dosyalari
+
+*.pem
+
+*.key
+
+*.p12
+
+*.pfx
+
+*.jks
+
+*.keystore
+
+*.crt
+
+*.cer
+
+*.der
+
+*.csr
+
+
+
+# Kimlik ve Secret yapilandirmalari
+
+secrets/
+
+.secrets/
+
+*credentials*.json
+
+*service-account*.json
+
+application-local.properties
+
+application-local.yml
+
+application-secret*.properties
+
+application-secret*.yml
+
+
+
+# -----------------------------------------------------------------------------
+
+# 2. BACKEND (Java 21 / Spring Boot / Maven)
+
+# -----------------------------------------------------------------------------
+
+**/target/
+
+target/
+
+*.class
+
+*.war
+
+*.nar
+
+*.ear
+
+*.jar
+
+!**/wrapper/maven-wrapper.jar
+
+
+
+# JVM Crash ve Dump kayitlari
+
+hs_err_pid*
+
+replay_pid*
+
+*.hprof
+
+
+
+# Maven ve Spring araclari
+
+.mtj.tmp/
+
+.SpringBeans
+
+.sts4-cache/
+
+dependency-reduced-pom.xml
+
+buildNumber.properties
+
+.mvn/timing.properties
+
+
+
+# -----------------------------------------------------------------------------
+
+# 3. FRONTEND (React / Next.js / TypeScript / Node.js)
+
+# -----------------------------------------------------------------------------
+
+**/node_modules/
+
+node_modules/
+
+**/.next/
+
+.next/
+
+**/out/
+
+out/
+
+**/dist/
+
+dist/
+
+**/build/
+
+build/
+
+
+
+# TypeScript ve Cache
+
+*.tsbuildinfo
+
+next-env.d.ts
+
+.eslintcache
+
+.stylelintcache
+
+.turbo/
+
+.vercel/
+
+.parcel-cache/
+
+
+
+# Paket yoneticisi loglari ve PnP
+
+npm-debug.log*
+
+yarn-debug.log*
+
+yarn-error.log*
+
+.pnpm-debug.log*
+
+.pnp
+
+.pnp.js
+
+.yarn/*
+
+!**/.yarn/patches
+
+!**/.yarn/plugins
+
+!**/.yarn/releases
+
+!**/.yarn/sdks
+
+!**/.yarn/versions
+
+
+
+# Test ve Coverage
+
+**/coverage/
+
+.nyc_output/
+
+
+
+# -----------------------------------------------------------------------------
+
+# 4. AI, VERI BILIMI VE SOZLESME TESTLERI (Python / FastAPI / ML)
+
+# -----------------------------------------------------------------------------
+
+# Sanal ortamlar
+
+.contracts-venv/
+
+**/venv/
+
+**/.venv/
+
+**/env/
+
+ENV/
+
+env.bak/
+
+venv.bak/
+
+
+
+# Python derleme ve cache
+
+**/__pycache__/
+
+*.py[cod]
+
+*$py.class
+
+*.so
+
+.Python
+
+
+
+# Test, Linter ve Tip kontrol araclari
+
+**/.pytest_cache/
+
+**/.mypy_cache/
+
+**/.ruff_cache/
+
+**/.hypothesis/
+
+.coverage
+
+.coverage.*
+
+htmlcov/
+
+.tox/
+
+.nox/
+
+
+
+# Jupyter ve ML Model Agirliklari (Repoyu sisirmemesi icin)
+
+.ipynb_checkpoints/
+
+*.pt
+
+*.pth
+
+*.onnx
+
+*.h5
+
+*.hdf5
+
+*.pkl
+
+*.joblib
+
+*.safetensors
+
+
+
+# FastAPI / Celery calisma dosyalari
+
+celerybeat-schedule
+
+celerybeat.pid
+
+
+
+# -----------------------------------------------------------------------------
+
+# 5. VERITABANI, DOCKER VE ALTYAPI (Infra & Local Data)
+
+# -----------------------------------------------------------------------------
+
+*.db
+
+*.sqlite
+
+*.sqlite3
+
+dump.rdb
+
+
+
+# Yerel container volume klasorleri
+
+postgres-data/
+
+kafka-data/
+
+redis-data/
+
+docker-volumes/
+
+infra/data/
+
+docker-compose.override.yml
+
+
+
+# Loglar ve Gecici dosyalar
+
+*.log
+
+logs/
+
+**/logs/
+
+*.tmp
+
+*.temp
+
+*.bak
+
+*.swp
+
+*.swo
+
+*~
+
+
+
+# -----------------------------------------------------------------------------
+
+# 6. IDE, EDITOR VE ISLETIM SISTEMI (OS)
+
+# -----------------------------------------------------------------------------
+
+# JetBrains (IntelliJ IDEA, PyCharm, WebStorm)
+
 .idea/
-.vscode/
+
+**/.idea/
+
 *.iml
 
-# Python sanal ortamları
-.contracts-venv/
-venv/
-__pycache__/
+*.iws
 
-# Maven derleme çıktıları
-**/target/
-target/
+*.ipr
+
+out/
+
+
+
+# VS Code
+
+.vscode/
+
+**/.vscode/
+
+!**/extensions.json
+
+
+
+# Eclipse / NetBeans
+
+.classpath
+
+.project
+
+.settings/
+
+.project/
+
+
+
+# macOS / Windows / Linux
+
+.DS_Store
+
+.AppleDouble
+
+.LSOverride
+
+._*
+
+Thumbs.db
+
+ehthumbs.db
+
+Desktop.ini
+
+$RECYCLE.BIN/
