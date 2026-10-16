@@ -1,0 +1,13 @@
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Python sanal ortamları
+.contracts-venv/
+venv/
+__pycache__/
+
+# Maven derleme çıktıları
+**/target/
+target/
