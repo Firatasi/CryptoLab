@@ -34,6 +34,30 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+
+        <!-- Simulation, finans hesapları için bu Java kütüphanesini kullanır.
+     Ayrı bir servis çağrısı yapılmaz; kütüphane uygulamaya dahil edilir. -->
+        <dependency>
+            <groupId>com.crypto</groupId>
+            <artifactId>finance-core</artifactId>
+
+            <!-- Modüller aynı proje sürümünü kullandığı için sürümü tekrar yazmıyoruz.
+                 Mevcut projede bu değer 0.0.1-SNAPSHOT olarak çözülür. -->
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Validation -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

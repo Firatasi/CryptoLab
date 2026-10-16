@@ -1,0 +1,14 @@
+{
+  "instrumentId": "33333333-3333-4333-8333-333333333333",
+  "snapshotId": "66666666-6666-4666-8666-666666666666",
+  "markPrice": "50000",
+  "lastPrice": "50000",
+  "bidPrice": "50000",
+  "askPrice": "50000",
+  "bidQty": "2",
+  "askQty": "2",
+  "sourceTime": "2026-10-12T15:00:00.000Z",
+  "receivedAt": "2026-10-12T15:00:00.010Z",
+  "quality": "FRESH",
+  "reasonCodes": []
+}

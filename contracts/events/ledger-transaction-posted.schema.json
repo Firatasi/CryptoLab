@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Kaydedilmiş muhasebe işlemini bildiren olay. Ek alanlara izin verilir; mevcut zorunlu alanlar korunur.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "recordedAt",
+    "producer",
+    "aggregateId",
+    "aggregateVersion",
+    "correlationId",
+    "causationId",
+    "sessionId",
+    "engineSequence",
+    "transactionId",
+    "transactionOrdinal",
+    "payload"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "eventType": {
+      "const": "LedgerTransactionPosted"
+    },
+    "schemaVersion": {
+      "$comment": "Bu olayın şema sürümü. Sözleşme paketinin 1.0.0 sürümünden farklıdır.",
+      "const": 2
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "recordedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "producer": {
+      "type": "string"
+    },
+    "aggregateId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "aggregateVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "correlationId": {
+      "$comment": "Aynı işlem akışıyla ilişkili olayları takip etmek için kullanılır.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "causationId": {
+      "$comment": "Bu olayın oluşmasına neden olan komut veya olayın kimliği.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "sessionId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "engineSequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "transactionId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "transactionOrdinal": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "payload": {
+      "$comment": "Muhasebe işleminin içeriği. Posting toplamının sıfır olması ayrıca test edilir.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "journalTransactionId",
+        "sessionId",
+        "reason",
+        "effectiveAt",
+        "positionId",
+        "orderId",
+        "postings"
+      ],
+      "properties": {
+        "journalTransactionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "effectiveAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "positionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "orderId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "postings": {
+          "$comment": "En az iki hesap hareketi gerekir. Tutarlar Decimal string olarak taşınır.",
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "accountId",
+              "amount",
+              "currency"
+            ],
+            "properties": {
+              "accountId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "amount": {
+                "type": "string",
+                "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+              },
+              "currency": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

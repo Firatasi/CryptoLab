@@ -1,0 +1,36 @@
+{
+  "eventId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "eventType": "LedgerTransactionPosted",
+  "schemaVersion": 2,
+  "occurredAt": "2026-10-12T15:00:00.000Z",
+  "recordedAt": "2026-10-12T15:00:00.020Z",
+  "producer": "simulation-service",
+  "aggregateId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "aggregateVersion": 1,
+  "correlationId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "causationId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+  "sessionId": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+  "engineSequence": 3,
+  "transactionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "transactionOrdinal": 1,
+  "payload": {
+    "journalTransactionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "sessionId": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    "reason": "INITIAL_CAPITAL",
+    "effectiveAt": "2026-10-12T15:00:00.000Z",
+    "positionId": null,
+    "orderId": null,
+    "postings": [
+      {
+        "accountId": "11111111-1111-4111-8111-111111111112",
+        "amount": "10000",
+        "currency": "USDT"
+      },
+      {
+        "accountId": "11111111-1111-4111-8111-111111111113",
+        "amount": "-10000",
+        "currency": "USDT"
+      }
+    ]
+  }
+}

@@ -32,6 +32,8 @@
         <module>strategy-service</module>
         <module>reporting-service</module>
         <module>account-service</module>
+        <module>finance-core</module>
+        <module>test-support</module>
     </modules>
 
     <!-- Modüllerin devralacağı ortak ayarlar -->

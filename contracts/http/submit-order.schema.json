@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Emir gönderme isteğinin biçim kuralları. UUID format kontrolü doğrulayıcıda etkin olmalıdır.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "planId",
+    "revision",
+    "planHash"
+  ],
+  "properties": {
+    "planId": {
+      "$comment": "İşlemin dayandığı planın kimliği. Planın varlığı ve sahipliği ayrıca kontrol edilir.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "revision": {
+      "$comment": "İstemcinin onayladığı plan revizyonu. Sıfır ve negatif değerler kabul edilmez.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "planHash": {
+      "$comment": "Yalnızca hash biçimi doğrulanır. Gerçek plan içeriğiyle eşleşmesi ayrıca kontrol edilir.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
