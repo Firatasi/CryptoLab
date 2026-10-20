@@ -201,3 +201,112 @@ Görülen çıktı:
 ### Sıradaki Tek Adım
 - **Görev:** `B06`
 - **Hedef:** Piyasa verisi adaptörü, Kafka olay yayını ve asenkron işleyici akışlarını bağlamak.
+
+
+---
+
+## B06 — Dinamik Piyasa Servisi, Kafka ve Veri Önbelleği
+- **Tarih:** 2026-10-20
+- **Durum:** Çekirdek port/adaptör, PostgreSQL şemaları (`market_db` ve `market_test_db`), outbox/ingress, fixture/normalizer ve Redis önbellek katmanı tamamlandı (`BUILD SUCCESS`); canlı sağlayıcı WebSocket/REST ağ smoke testi ve arka plan backfill/export işleyicileri B06 tamamlama sınırında tutuldu
+- **Şartname Sürümü:** 3.0 / **Contract Sürümü:** 1.0.0
+
+### Tamamlanan Alt Maddeler
+- **B06.1:** `market-data-service`, `simulation-service` ve `reporting-service` modüllerine `spring-kafka`; `market-data-service` modülüne `spring-boot-starter-data-redis`, `spring-boot-starter-jdbc`, `spring-boot-starter-flyway`, `flyway-database-postgresql` ve `postgresql` bağımlılıkları eklendi. `infra/compose.yaml` (`kafka:3.9.1` ve `redis:7.4.2`) ve `application.properties` dosyaları yapılandırıldı; `MarketSource` portu, `FixtureAdapter` ve `V1__market.sql` oluşturuldu.
+- **B06.2:** `market-data-service` içinde `FOR UPDATE SKIP LOCKED` ile atomik claim yapan `OutboxPublisher` ve `MarketConfig`; `simulation-service` içinde tek transaction'da `market_inputs` + aktif oturumlara (`OPEN`/`LIQUIDATING` pozisyonlar ve `NEW`/`EXIT_PENDING_DATA` emirler) `pending_engine_inputs` fan-out yapan `MarketIngress`, DB commit sonrası manuel `ack.acknowledge()` çağıran `MarketListener` ve `CommonContainerStoppingErrorHandler` yapılandırması gerçeklendi.
+- **B06.3–B06.5:** Filtreleri dizin yerine `filterType` (`PRICE_FILTER`, `LOT_SIZE`, `MIN_NOTIONAL`) üzerinden çözen ve `contractType:onboardDate` kimliğini koruyan `BinanceMetadataDecoder` ile yalnızca `https`, sabit host, `Redirect.NEVER` ve 4 MB boyut sınırını zorlayan `PublicMarketHttp` yazıldı.
+- **B06.6:** `mark` için 5 sn, `quote` için 2 sn TTL uygulayan ve Redis erişilemez olduğunda (`DataAccessException`) hata fırlatmadan `Optional.empty()` dönen `SnapshotCache` yazıldı.
+
+### Değişen Dosyalar
+- `infra/compose.yaml`
+- `backend/market-data-service/pom.xml`
+- `backend/simulation-service/pom.xml`
+- `backend/reporting-service/pom.xml`
+- `backend/market-data-service/src/main/resources/application.properties`
+- `backend/simulation-service/src/main/resources/application.properties`
+- `backend/market-data-service/src/main/resources/db/migration/V1__market.sql`
+- `backend/market-data-service/src/main/java/com/crypto/marketdataservice/MarketDataServiceApplication.java`
+- `backend/market-data-service/src/main/java/com/crypto/marketdataservice/application/port/MarketSource.java`
+- `backend/market-data-service/src/main/java/com/crypto/marketdataservice/infrastructure/client/fixture/FixtureAdapter.java`
+- `backend/market-data-service/src/main/java/com/crypto/marketdataservice/infrastructure/messaging/OutboxPublisher.java`
+- `backend/market-data-service/src/main/java/com/crypto/marketdataservice/infrastructure/mapper/BinanceMetadataDecoder.java`
+- `backend/market-data-service/src/main/java/com/crypto/marketdataservice/infrastructure/client/PublicMarketHttp.java`
+- `backend/market-data-service/src/main/java/com/crypto/marketdataservice/infrastructure/cache/SnapshotCache.java`
+- `backend/market-data-service/src/main/java/com/crypto/marketdataservice/infrastructure/config/MarketConfig.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/infrastructure/messaging/MarketIngress.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/infrastructure/messaging/MarketListener.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/infrastructure/config/EngineConfig.java`
+- `backend/market-data-service/src/test/resources/application-test.properties`
+- `backend/simulation-service/src/test/resources/application-test.properties`
+- `backend/market-data-service/src/test/java/com/crypto/marketdataservice/MarketDataServiceApplicationTests.java`
+- `backend/market-data-service/src/test/java/com/crypto/marketdataservice/MarketDataB06Test.java`
+- `backend/simulation-service/src/test/java/com/crypto/simulationservice/MarketIngressIT.java`
+
+### Çalıştırılan Komutlar ve Görülen Çıktı
+Komut:
+```powershell
+$env:DB_PASSWORD='2002'; mvn -pl market-data-service,simulation-service,reporting-service -am test "-Dtest=MarketDataB06Test,MarketDataServiceApplicationTests,MarketIngressIT,ExecutionAndPreviewTest,OrderSubmissionIT,LedgerIT,OwnerIsolationIT" "-Dsurefire.failIfNoSpecifiedTests=false"
+```
+Görülen çıktı:
+- `market-data-service`: `Tests run: 7, Failures: 0, Errors: 0, Skipped: 0` (`MarketDataB06Test`: 6, `MarketDataServiceApplicationTests`: 1)
+- `simulation-service`: `Tests run: 19, Failures: 0, Errors: 0, Skipped: 0` (`MarketIngressIT`: 2, `ExecutionAndPreviewTest`: 6, `LedgerIT`: 5, `OrderSubmissionIT`: 3, `OwnerIsolationIT`: 3)
+- `reporting-service`: `SUCCESS`
+- Toplam: `BUILD SUCCESS`
+
+### Fixture ve Gerçek Entegrasyon Sınırı
+- **PASS (Doğrulananlar):** PostgreSQL `postgres` veritabanı altında hem `market_db` hem de `market_test_db` şemalarında `V1__market.sql` tablolarının oluşturulması; `FixtureAdapter` kontrollü tick üretimi; `BinanceMetadataDecoder` filtre çözümlemesi; `PublicMarketHttp` HTTPS ve host doğrulaması; `SnapshotCache` TTL ve Redis kapalı (`DataAccessException`) fallback davranışı; `OutboxPublisher` atomik PostgreSQL claim/publish güncellemesi; `MarketIngress` ve `MarketListener` üzerinde mükerrer olayın (`duplicate eventId`) tek `market_inputs` ve yalnız aktif oturumlara tek `pending_engine_inputs` üretmesi ve bozuk payload'da commit/ack yapılmaması.
+- **Kapsam Sınırı (Canlı Ağ / Worker):** Canlı Binance WebSocket/REST ağ smoke testi (BLOCKED / dış ağ bağımlı) ve tam kapsamlı backfill/export worker döngüleri çalıştırılmadığı için PASS olarak işaretlenmemiştir.
+
+---
+
+### Sıradaki Tek Adım
+- **Görev:** `B07`
+- **Hedef:** Kullanıcının paylaşacağı bir sonraki görev MD'si ile simülasyon motoru / strateji akışlarını ilerletmek.
+
+
+---
+
+## B07 — Risk Yaşam Döngüsü, Funding ve Koruyucu Çıkışlar
+- **Tarih:** 2026-10-20
+- **Durum:** Tamamlandı (`V3__risk.sql`, risk/çıkış karar servisleri, funding boundary modeli, deadline zamanlayıcısı ve PostgreSQL yarış/kabul testleri doğrulandı)
+- **Şartname Sürümü:** 3.0 / **Contract Sürümü:** 1.0.0
+
+### Tamamlanan Alt Maddeler
+- **B07.1:** `RiskDecision` ile mark fiyatında likidasyon (`Finance.liquidates`), Stop-Loss ve Take-Profit kontrolleri (aynı adımda likidasyon önceliğiyle) ve `RiskPolicyEvaluator` ile 4 kısıtlı (`qMargin`, `qCash`, `qNotional`, `riskBudget/distance`) pozisyon boyutlandırma + günlük kayıp durdurma (`dailyHalt`) gerçeklendi.
+- **B07.2:** `V3__risk.sql` ile `funding_boundaries`, `funding_settlements`, `due_actions`, `daily_risk` ve `halt_reasons` tabloları hem `simulation_db` hem de `simulation_test_db` şemalarında oluşturuldu; `FundingBoundary` ile boundary uygunluğu (`eligible`) ve `AVAILABLE_FIRST` / geç settlement dağıtımı (`allocate`) yazıldı.
+- **B07.3–B07.5:** `ExitDecision` ile taze olmayan quote'ta `EXIT_PENDING_DATA` bekletmesi, tahta likidite katılım sınırı (`LIQUIDITY_LIMIT`), negatif kısmi kapanışta tam kapanışa zorlama (`forceFullClose`) ve çıkış nedenleri (`LIQUIDATION`, `INSOLVENT_EXIT`, `FORCED_RISK_CLOSE`, `USER_CLOSE`) gerçeklendi.
+- **B07.6–B07.7:** `DeadlineRepository`, `JdbcDeadlineRepository` ve `DeadlineScheduler` ile `opened_at + horizon` tabanlı idempotent vade planlama (`schedule`) ve atomik `claim` akışı kuruldu; 3 iş parçacıklı (`USER_CLOSE`, `STOP_LOSS`, `LIQUIDATION`) PostgreSQL yarış testiyle tek pozisyon kapanışı ve tek `journal_transactions` kaydı doğrulandı.
+
+### Değişen Dosyalar
+- `backend/simulation-service/src/main/resources/db/migration/V3__risk.sql`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/domain/service/RiskDecision.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/domain/service/RiskPolicyEvaluator.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/domain/model/FundingBoundary.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/domain/service/ExitDecision.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/application/repository/DeadlineRepository.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/infrastructure/repository/JdbcDeadlineRepository.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/application/service/DeadlineScheduler.java`
+- `backend/simulation-service/src/test/java/com/crypto/simulationservice/RiskAndDeadlineIT.java`
+
+### Çalıştırılan Komutlar ve Görülen Çıktı
+Komut:
+```powershell
+$env:DB_PASSWORD='2002'; mvn -pl simulation-service -am test "-Dtest=RiskAndDeadlineIT,MarketIngressIT,ExecutionAndPreviewTest,OrderSubmissionIT,LedgerIT,OwnerIsolationIT" "-Dsurefire.failIfNoSpecifiedTests=false"
+```
+Görülen çıktı:
+- `ExecutionAndPreviewTest`: `Tests run: 6, Failures: 0, Errors: 0, Skipped: 0`
+- `LedgerIT`: `Tests run: 5, Failures: 0, Errors: 0, Skipped: 0`
+- `MarketIngressIT`: `Tests run: 2, Failures: 0, Errors: 0, Skipped: 0`
+- `OrderSubmissionIT`: `Tests run: 3, Failures: 0, Errors: 0, Skipped: 0`
+- `OwnerIsolationIT`: `Tests run: 3, Failures: 0, Errors: 0, Skipped: 0`
+- `RiskAndDeadlineIT`: `Tests run: 7, Failures: 0, Errors: 0, Skipped: 0`
+- Toplam: `Tests run: 26, Failures: 0, Errors: 0, Skipped: 0` — `BUILD SUCCESS`
+
+### Fixture ve Gerçek Entegrasyon Sınırı
+- `RiskDecision`, `RiskPolicyEvaluator`, `FundingBoundary`, `ExitDecision`, `DeadlineScheduler`, `JdbcDeadlineRepository` ve 3-thread yarış testi gerçek PostgreSQL (`simulation_test_db` ve `simulation_db`) üzerinde doğrulandı.
+- Canlı piyasa akışıyla tetiklenen arka plan worker döngüsü ve B08 raporlama/projeksiyon entegrasyonu bir sonraki görev kapsamındadır.
+
+---
+
+### Sıradaki Tek Adım
+- **Görev:** `B08`
+- **Hedef:** Kullanıcının paylaşacağı bir sonraki görev MD'si ile raporlama ve okuma modeli akışlarını tamamlamak.
