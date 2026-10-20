@@ -310,3 +310,99 @@ Görülen çıktı:
 ### Sıradaki Tek Adım
 - **Görev:** `B08`
 - **Hedef:** Kullanıcının paylaşacağı bir sonraki görev MD'si ile raporlama ve okuma modeli akışlarını tamamlamak.
+
+
+---
+
+## B08 — Reporting, Redis, Gateway ve SSE
+- **Tarih:** 2026-10-20
+- **Durum:** Tamamlandı (`reporting_db` / `reporting_test_db` şemaları, `LedgerProjection`, `ReportMetrics`, `CsvCell`, `RedisLoginLimiter`, `RouteTable` / `ProxyController` ve `SseRing` doğrulandı)
+- **Şartname Sürümü:** 3.0 / **Contract Sürümü:** 1.0.0
+
+### Tamamlanan Alt Maddeler
+- **B08.1–B08.3:** `reporting-service` içinde `V1__projections.sql` (`session_owners`, `account_metadata`, `ledger_projection`, `account_projection`, `projection_checkpoints`, `inbox`, `equity_samples`, `trade_summaries`, `notifications`, `report_jobs`) hem `reporting_db` hem de `reporting_test_db` şemalarına uygulandı. `LedgerProjection` ile yalnızca `LedgerTransactionPosted` olaylarında hesap bakiyelerinin güncellenmesi (`PositionClosed` olayında kârın ikinci kez eklenmemesi), mükerrer `eventId` idempotensisi ve `PROJECTION_SEQUENCE_GAP` kontrolü gerçeklendi; `ReportMetrics` ile `winRate`, `profitFactor` ve `maxDrawdown` saf hesapları yazıldı.
+- **B08.4:** `identity-service` içinde atomik `INCR` + `EXPIRE` çalışan `login-limit.lua` ve `@Primary RedisLoginLimiter` (Redis erişilemez olduğunda `LocalLoginLimiter` fallback'iyle) devreye alındı.
+- **B08.5:** `api-gateway` içinde `RouteTable` (`auth`, `market`, `sim`, `strategy`, `reports`, `account` ve `/.well-known/jwks.json` allowlist'i, `/internal/**` ve path traversal reddi), `GatewayTargetResolver`, `GatewayErrors` ve `ProxyController` (bounded body sınırı ve güvenli başlık filtrelemesi) oluşturuldu.
+- **B08.6–B08.7:** `simulation-service` içinde `epoch:sequence` tabanlı `SseRing` (`resync.required` ve heartbeat desteğiyle) ve `reporting-service` içinde formül enjeksiyonunu (`=+-@`, `\t`, `\r`) engelleyen `CsvCell` yazıldı.
+
+### Değişen Dosyalar
+- `backend/reporting-service/pom.xml`
+- `backend/reporting-service/src/main/resources/application.properties`
+- `backend/reporting-service/src/main/resources/db/migration/V1__projections.sql`
+- `backend/reporting-service/src/main/java/com/crypto/reportingservice/infrastructure/repository/LedgerProjection.java`
+- `backend/reporting-service/src/main/java/com/crypto/reportingservice/domain/service/ReportMetrics.java`
+- `backend/reporting-service/src/main/java/com/crypto/reportingservice/infrastructure/export/CsvCell.java`
+- `backend/identity-service/pom.xml`
+- `backend/identity-service/src/main/resources/login-limit.lua`
+- `backend/identity-service/src/main/java/com/crypto/identityservice/infrastructure/ratelimit/RedisLoginLimiter.java`
+- `backend/identity-service/src/main/java/com/crypto/identityservice/infrastructure/ratelimit/LocalLoginLimiter.java`
+- `backend/api-gateway/src/main/java/com/crypto/apigateway/infrastructure/config/RouteTable.java`
+- `backend/api-gateway/src/main/java/com/crypto/apigateway/infrastructure/client/GatewayTargetResolver.java`
+- `backend/api-gateway/src/main/java/com/crypto/apigateway/api/exception/GatewayErrors.java`
+- `backend/api-gateway/src/main/java/com/crypto/apigateway/api/controller/ProxyController.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/infrastructure/streaming/SseRing.java`
+- `backend/api-gateway/src/test/java/com/crypto/apigateway/GatewayB08Test.java`
+- `backend/simulation-service/src/test/java/com/crypto/simulationservice/SseRingTest.java`
+
+---
+
+## B08A — Account: Kullanıcı İşlem Geçmişi ve Kâr/Zarar Görünümü
+- **Tarih:** 2026-10-20
+- **Durum:** Tamamlandı (`account-service` katmanları, `V2__account_scope.sql`, `AccountSummaryQueryRepository` ve `ReportingAccountController` doğrulandı)
+- **Şartname Sürümü:** 3.0 + ACC-01 / **Contract Sürümü:** 1.0.0
+
+### Tamamlanan Alt Maddeler
+- **B08A.1–B08A.3:** Stateless `account-service` (8086 portu) POM, `application.properties` ve RS256 JWKS tabanlı `AccountSecurityConfig` (issuer, audience, expiry ve UUID `sub` doğrulaması) tamamlandı.
+- **B08A.4–B08A.5:** `reporting-service` içinde `V2__account_scope.sql` additive migration'ı, `AccountSummaryQueryRepository` (`LIVE_PAPER`/`USDT` kapsamı, `netRealizedPnl = realizedPnl - totalFees + signedFunding - liquidationFees`, `totalNetPnl = netRealizedPnl + unrealizedPnl`, `insuranceAdjustment` ayrımı, `BUILDING`/`READY` kapsam kontrolü ve HMAC imzalı `(opened_at DESC, position_id DESC)` cursor sayfalama) ve `ReportingAccountController` (`/api/v1/reports/me/account-summary` ve `/api/v1/reports/me/trade-history`) gerçeklendi.
+- **B08A.6–B08A.8:** `AccountSummary`, `TradeHistory`, `AccountFailure`, `AccountReportReader`, `AccountQueryService`, `BoundedBody`, `HttpAccountReportReader`, `AccountMapper`, `AccountController` ve `AccountErrors` sınıfları yazıldı; `AccountB08ATest` ve `ReportingB08AndB08ATest` ile doğrulandı.
+
+### Değişen Dosyalar
+- `backend/reporting-service/src/main/resources/db/migration/V2__account_scope.sql`
+- `backend/reporting-service/src/main/java/com/crypto/reportingservice/infrastructure/repository/AccountSummaryQueryRepository.java`
+- `backend/reporting-service/src/main/java/com/crypto/reportingservice/api/controller/ReportingAccountController.java`
+- `backend/reporting-service/src/main/java/com/crypto/reportingservice/infrastructure/config/ReportingSecurityConfig.java`
+- `backend/reporting-service/src/test/resources/application-test.properties`
+- `backend/reporting-service/src/test/java/com/crypto/reportingservice/ReportingServiceApplicationTests.java`
+- `backend/reporting-service/src/test/java/com/crypto/reportingservice/ReportingB08AndB08ATest.java`
+- `backend/account-service/pom.xml`
+- `backend/account-service/src/main/resources/application.properties`
+- `backend/account-service/src/main/java/com/crypto/accountservice/domain/model/AccountSummary.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/domain/model/TradeHistory.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/domain/exception/AccountFailure.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/application/port/AccountReportReader.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/application/service/AccountQueryService.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/api/dto/response/AccountSummaryResponse.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/api/dto/response/TradeHistoryResponse.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/api/dto/response/AccountError.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/api/mapper/AccountMapper.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/api/controller/AccountController.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/infrastructure/client/BoundedBody.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/infrastructure/client/HttpAccountReportReader.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/api/exception/AccountErrors.java`
+- `backend/account-service/src/main/java/com/crypto/accountservice/infrastructure/config/AccountSecurityConfig.java`
+- `backend/account-service/src/test/resources/application-test.properties`
+- `backend/account-service/src/test/java/com/crypto/accountservice/AccountServiceApplicationTests.java`
+- `backend/account-service/src/test/java/com/crypto/accountservice/AccountB08ATest.java`
+
+### Çalıştırılan Komutlar ve Görülen Çıktı
+Komut:
+```powershell
+$env:DB_PASSWORD='2002'; mvn -pl reporting-service,account-service,api-gateway,identity-service,simulation-service -am test "-Dtest=ReportingB08AndB08ATest,ReportingServiceApplicationTests,AccountB08ATest,AccountServiceApplicationTests,GatewayB08Test,ApiGatewayApplicationTests,IdentityFlowIT,SseRingTest,RiskAndDeadlineIT" "-Dsurefire.failIfNoSpecifiedTests=false"
+```
+Görülen çıktı:
+- `api-gateway`: `Tests run: 2, Failures: 0, Errors: 0, Skipped: 0` (`SUCCESS`)
+- `identity-service`: `Tests run: 5, Failures: 0, Errors: 0, Skipped: 0` (`SUCCESS`)
+- `simulation-service`: `Tests run: 8, Failures: 0, Errors: 0, Skipped: 0` (`SUCCESS`)
+- `reporting-service`: `Tests run: 4, Failures: 0, Errors: 0, Skipped: 0` (`SUCCESS`)
+- `account-service`: `Tests run: 3, Failures: 0, Errors: 0, Skipped: 0` (`SUCCESS`)
+- Toplam: `BUILD SUCCESS`
+
+### Fixture ve Gerçek Entegrasyon Sınırı
+- `reporting_db` ve `reporting_test_db` şemaları yerel PostgreSQL (`postgres` veritabanı) üzerinde oluşturuldu; `LedgerProjection`, `AccountSummaryQueryRepository` (100/10.05/-1/-20 altın örneği, owner izolasyonu, HMAC cursor sayfalama), `ReportMetrics`, `CsvCell`, `AccountQueryService`, `BoundedBody`, `RouteTable` ve `SseRing` testlerle doğrulandı.
+- Canlı Eureka üzerinden çoklu süreç (`account-service` -> `reporting-service` -> `simulation-service` audit manifest bootstrap) uçtan uca akışı sonraki entegrasyon aşamalarında doğrulanacaktır.
+
+---
+
+### Sıradaki Tek Adım
+- **Görev:** `B09`
+- **Hedef:** Kullanıcının paylaşacağı bir sonraki görev MD'si ile devam etmek.
