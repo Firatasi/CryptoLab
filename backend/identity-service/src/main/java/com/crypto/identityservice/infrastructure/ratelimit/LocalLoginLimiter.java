@@ -1,14 +1,12 @@
 package com.crypto.identityservice.infrastructure.ratelimit;
 
 import com.crypto.identityservice.application.port.LoginLimiter;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.time.Clock;
 import java.util.LinkedHashMap;
 
 @Component
-@Profile({"dev", "test"})
 public class LocalLoginLimiter implements LoginLimiter {
 
     private record Window(long minute, int count) {
