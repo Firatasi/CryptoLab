@@ -485,3 +485,63 @@ Görülen çıktı:
 ### Sıradaki Tek Adım
 - **Görev:** `B10` (veya kullanıcının paylaşacağı sıradaki görev MD'si)
 - **Hedef:** Kullanıcının paylaşacağı bir sonraki görev MD'si ile devam etmek.
+
+
+---
+
+## B10 — Eğitim Yönetimi Facade’ı
+- **Tarih:** 2026-10-22
+- **Durum:** Tamamlandı (`TrainingProvider`, `HttpTrainingProvider`, `FakeTrainingProvider`, `ContractGate` / `JsonContractGate`, `TrainingController`, `TrainingJsonController`, `V4__training_projection.sql` / `JdbcTrainingJobProjectionRepository`, `SecurityConfig` rol/yetki kapıları ve dayanıklılık testleri doğrulandı; canlı A06–A09 Python eğitim servisleri henüz ayağa kaldırılmadığı için `INTEGRATION_PENDING`)
+- **Şartname Sürümü:** 3.0 / **Contract Sürümü:** 1.0.0
+
+### Tamamlanan Alt Maddeler
+- **B10.1:** `/api/v1/strategy/training` altındaki tüm source (`POST /sources`, `POST /source-imports`, `GET /sources`, `GET /sources/{id}`, `GET /sources/{id}/pages/{page}`, `DELETE /sources/{id}`), example (`POST /example-jobs`, `GET /examples`, `PATCH /examples/{id}`), dataset (`POST /datasets`), run (`POST /runs`, `GET /runs/{id}`, `POST /runs/{id}/cancel`) ve model (`GET /models`, `GET /models/{id}`, `POST /models/{id}/promote`, `POST /models/{id}/rollback`) uçları açık olarak eşlendi; rastgele catch-all proxy açılmadı ve A06–A09 sorumluluk sınırı korundu.
+- **B10.2:** `SecurityConfig` (`@EnableMethodSecurity`), `TrainingController` ve `TrainingJsonController` üzerinde `USER` rolüne tüm eğitim rotalarında `403 FORBIDDEN`, `TRAINER`/`ADMIN` rollerine ingest/review/dataset/run yetkisi ve yalnız `MODEL_PUBLISH` authority'sine sahip `TRAINER`/`ADMIN` aktörlerine `promote`/`rollback` yetkisi uygulandı.
+- **B10.3–B10.4:** `HttpTrainingProvider` ile yalnız sabit AI base URL'ine (`/internal/training/...`) giden, 30s timeout, 1 MiB JSON / 20 MiB multipart streaming (`SequenceInputStream`, sabit `"source.pdf"` dosya adı, `getBytes()` ile belleğe toplamadan) sınırlarını uygulayan, `X-Service-Secret`, `X-Actor-Id`, `X-Actor-Roles`, `X-Actor-Authorities`, `X-Request-Id`, `X-Deadline` ve `Idempotency-Key` başlıklarını ileten iç istemci yazıldı. `JsonContractGate` ile tüm JSON rotalarında zorunlu/opsiyonel alan, UUID, enum ve HTTPS URL doğrulaması yapıldı; tanımsız alanlar (`UNKNOWN_FIELD`) ve tanımsız sorgu parametreleri (`UNKNOWN_QUERY`) reddedildi.
+- **B10.5:** `V4__training_projection.sql` ve `JdbcTrainingJobProjectionRepository` ile `training.jobs.v1` olayları için aynı transaction içinde `inbox` dedupe ve `training_job_projection` upsert (`updated_at` ve `aggregate_version` iyimser sıra korumasıyla) gerçeklendi. `status` (`SUCCEEDED`) ve `stage` (`EXTRACTING` vs `TRAINING`) ayrımı korundu; `progress` alanı `null` geldiğinde sahte yüzde uydurulmadan `null` saklandı.
+- **B10.6–B10.7:** Model `promote` ve `rollback` işlemlerinde `expectedAliasVersion` compare-and-swap (`409 ALIAS_VERSION_CONFLICT`) ve audit kaydı doğrulandı; mevcut önerilerin (`proposals`) `model_bundle_id` ve `feature_snapshot_id` geçmişinin değişmediği kanıtlandı. Eğitim sağlayıcısı kapalıyken eğitim uçlarının `503 TRAINING_UNAVAILABLE` (`retryable: true`) döndüğü, buna karşılık hazır model analizlerinin (`AnalysisWorker`) kesintisiz çalıştığı doğrulandı.
+
+### Değişen ve Eklenen Dosyalar
+- `backend/strategy-service/pom.xml`
+- `backend/strategy-service/src/main/resources/application.properties`
+- `backend/strategy-service/src/main/resources/db/migration/V4__training_projection.sql`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/port/TrainingProvider.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/repository/TrainingJobProjectionRepository.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/repository/JdbcTrainingJobProjectionRepository.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/client/HttpTrainingProvider.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/client/fixture/FakeTrainingProvider.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/api/validation/ContractGate.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/validation/JsonContractGate.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/api/controller/TrainingController.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/api/controller/TrainingJsonController.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/api/exception/ErrorResponses.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/api/exception/StrategyApiErrors.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/config/SecurityConfig.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/config/StrategyBeansConfig.java`
+- `backend/strategy-service/src/test/java/com/crypto/strategyservice/HttpTrainingProviderTest.java`
+- `backend/strategy-service/src/test/java/com/crypto/strategyservice/TrainingFacadeB10IT.java`
+
+### Çalıştırılan Komutlar ve Görülen Çıktı
+Komut:
+```powershell
+$env:DB_PASSWORD='2002'; $env:STRATEGY_TEST_DB_PASSWORD='2002'; mvn -f backend/pom.xml -pl strategy-service test "-Dtest=TrainingFacadeB10IT,HttpTrainingProviderTest,StrategyB09IT,AnalysisJobRepositoryIT,HttpModelClientTest,StrategyFlowTest,StrategyServiceApplicationTests"
+```
+Görülen çıktı:
+- `AnalysisJobRepositoryIT`: `Tests run: 5, Failures: 0, Errors: 0, Skipped: 0`
+- `HttpModelClientTest`: `Tests run: 6, Failures: 0, Errors: 0, Skipped: 0`
+- `HttpTrainingProviderTest`: `Tests run: 2, Failures: 0, Errors: 0, Skipped: 0`
+- `StrategyB09IT`: `Tests run: 6, Failures: 0, Errors: 0, Skipped: 0`
+- `StrategyFlowTest`: `Tests run: 11, Failures: 0, Errors: 0, Skipped: 0`
+- `StrategyServiceApplicationTests`: `Tests run: 1, Failures: 0, Errors: 0, Skipped: 0`
+- `TrainingFacadeB10IT`: `Tests run: 4, Failures: 0, Errors: 0, Skipped: 0`
+- Toplam: `Tests run: 35, Failures: 0, Errors: 0, Skipped: 0` — `BUILD SUCCESS`
+
+### Fixture ve Gerçek Entegrasyon Sınırı
+- **PASS (Doğrulananlar):** `HttpTrainingProvider` yerel HTTP sunucu sözleşme testleri (`X-Service-Secret`, `X-Actor-*`, multipart stream, sabit `"source.pdf"`, 5xx -> `TRAINING_UNAVAILABLE`), `TrainingController` ve `TrainingJsonController` üzerinde `USER`/`TRAINER`/`MODEL_PUBLISH` yetki matrisi, 20MB dosya sınırı (`413`), idempotency çakışması (`409`), kullanıcılar arası kaynak izolasyonu (`404`), `expectedAliasVersion` CAS (`409`), eski öneri geçmişinin (`model_bundle_id`/`feature_snapshot_id`) değişmezliği, `V4__training_projection.sql` PostgreSQL projeksiyonu ve eğitim servisi kapalıyken hazır model analizinin devam etmesi doğrulandı.
+- **INTEGRATION_PENDING (Canlı AI Eğitim Servisi A06–A09):** Gerçek Python eğitim servisleri (`A06` kaynak işleme, `A07` dataset, `A08` eğitim, `A09` değerlendirme/promotion) henüz çalıştırılmadığı için canlı süreç entegrasyonu `INTEGRATION_PENDING` olarak kaydedilmiştir; `FakeTrainingProvider` çıktıları `FIXTURE_TRAINING_PROVIDER` etiketlidir ve gerçek model eğitimi iddiası taşımaz.
+
+---
+
+### Sıradaki Tek Adım
+- **Görev:** Kullanıcının paylaşacağı sıradaki görev MD'si
+- **Hedef:** Kullanıcının paylaşacağı bir sonraki görev MD'si ile devam etmek.
