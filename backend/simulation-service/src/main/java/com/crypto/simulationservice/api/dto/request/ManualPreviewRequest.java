@@ -30,7 +30,38 @@ public record ManualPreviewRequest(
         int horizonSeconds,
         @NotNull
         @Pattern(regexp = "REEVALUATE|CLOSE_AT_DEADLINE")
-        String expiryPolicy) {
+        String expiryPolicy,
+        UUID originProposalId) {
     // JSON alanı String: büyük finans sayıları JavaScript number hassasiyetine teslim edilmez.
 
+    public ManualPreviewRequest(
+            String source,
+            UUID sessionId,
+            UUID instrumentId,
+            String side,
+            String orderType,
+            String marginBudget,
+            String leverage,
+            String limitPrice,
+            String stopLoss,
+            String takeProfit,
+            int horizonSeconds,
+            String expiryPolicy
+    ) {
+        this(
+                source,
+                sessionId,
+                instrumentId,
+                side,
+                orderType,
+                marginBudget,
+                leverage,
+                limitPrice,
+                stopLoss,
+                takeProfit,
+                horizonSeconds,
+                expiryPolicy,
+                null
+        );
+    }
 }
