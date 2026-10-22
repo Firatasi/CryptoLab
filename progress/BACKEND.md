@@ -406,3 +406,82 @@ Görülen çıktı:
 ### Sıradaki Tek Adım
 - **Görev:** `B09`
 - **Hedef:** Kullanıcının paylaşacağı bir sonraki görev MD'si ile devam etmek.
+
+
+---
+
+## B09 — Strategy, Piyasa Tarama ve AI Bağlantısı
+- **Tarih:** 2026-10-22
+- **Durum:** Tamamlandı (`PredictionResult`, `ModelClient`, `FakeModelClient`, `HttpModelClient`, `NumericPolicy`, `AnalysisFlow`, kalıcı `AnalysisWorker`, tekil backfill / `WAITING_DATA`, `ScanService` cursor/partial/cancel, `ExplanationTemplate` TTL koruması ve `AiPreviewService` exact onay hattı doğrulandı; canlı A05 model servisi henüz eğitilmediği için `INTEGRATION_PENDING`)
+- **Şartname Sürümü:** 3.0 / **Contract Sürümü:** 1.0.0
+
+### Tamamlanan Alt Maddeler
+- **B09.1:** `PredictionResult` değişmez kuralları (`READY` vs `INSUFFICIENT_DATA`/`OUT_OF_DOMAIN`/`STALE_DATA`, sonlu sayısal çıktı ve horizon kontrolü) ve `contracts/fixtures/prediction-result.json` sözleşme uyumu doğrulandı; `ModelClient` portu ve tolerant `JsonMapper` kullanan `HttpModelClient` (`X-Service-Secret`, `X-Request-Id`, `X-Deadline`, 1 MiB yanıt sınırı, redirect reddi) gerçeklendi.
+- **B09.2:** Açık etiketli `FakeModelClient` (`FIXTURE_MODEL`, `DEVELOPMENT_CANDIDATE`) ile `QUEUED -> RUNNING -> SUCCEEDED (WAIT)` (0 proposal, 0 order), `READY` tahminlerde `LONG`/`SHORT` öneri üretimi ve teknik model hatalarında `FAILED` (`MODEL_UNAVAILABLE`, `action = null`) ayrımı `JdbcAnalysisJobRepository` ve `AnalysisWorker` üzerinde kuruldu.
+- **B09.3:** Eksik veri kapsamında `WAITING_DATA` durumuna geçiş ve `V3__backfill_and_scan_items.sql` altındaki `backfill_requests` tablosu ile `(instrument_id, horizon_seconds, as_of)` başına tekil (single-flight) backfill kaydı; analiz başlangıcında `session_generation`, `market_dataset_id`, `market_snapshot_id`, `model_bundle_id`, `feature_version`, `feature_schema_hash` ve `bundle_release_status` alanlarının sabitlenmesi (pin) ve `FEATURE_SCHEMA_MISMATCH` kapısı doğrulandı.
+- **B09.4:** `policy_artifacts` tablosunda saklanan sürümlü `NumericPolicy.Artifact` ile net edge, maksimum volatilite, minimum veri kapsamı ve doğrulanmış `Decimal` referans fiyat / ATR üzerinden `stopLoss`, `takeProfit` ve `suggestedLeverage` niyeti üretildi; miktar/marjin/komisyon otoritesi `Simulation` servisine bırakıldı.
+- **B09.5:** `simulation-service` içinde `AiPreviewRequest`, `ProposalReader`, `PreviewFactory.createFromAiProposal`, `PreviewFactory.createFromModifiedProposal` ve `AiPreviewService` gerçeklendi. `AI_PROPOSAL` önizlemesinde zorunlu SL/TP kontrolü (`AI_PROPOSAL_BRACKET_REQUIRED`), `RiskPolicyEvaluator.size(...)` ile özkaynak/kullanılabilir bakiye tabanlı miktar hesaplama, süresi dolmuş öneri (`PLAN_EXPIRED`), generation uyuşmazlığı (`PLAN_REVOKED`), revision uyuşmazlığı (`NOT_FOUND`) ve kullanıcı tarafından değiştirilen önerinin `source = "MANUAL"` + `originProposalId` olarak yeni `planId`/`planHash` üretmesi ve `SubmitOrder` exact onay hattına bağlanması doğrulandı.
+- **B09.6:** `ScanJobRepository`, `JdbcScanJobRepository` ve `ScanService` ile kararlı universe snapshot ve deterministik cursor (`cursor:<universeVersion>:<index>`) tabanlı sayfalama (`pageLimit <= 200`), 200+ enstrümanlı evrende çoklu sayfa taraması, bütçe bittiğinde `PARTIAL` + cursor döndürülmesi (tüm piyasa tarandı iddiası yapılmaması) ve `cancel` çağrısında açık pozisyonlara dokunmadan yeni analiz planlamanın durdurulması (`CANCELLED`) doğrulandı.
+- **B09.7:** Numeric sonuç ve policy niyeti hazır olduğunda öneri `validUntil` TTL süresinin derhal başlatılması; `ExplanationClient` zaman aşımına uğradığında veya hata verdiğinde TTL süresini uzatmadan yalnız doğrulanmış `reasonCodes` ve `observedFeatureSummary` alanlarını kullanan deterministik `ExplanationTemplate` (`explanationStatus = "TEMPLATE"`) fallback'ine geçilmesi doğrulandı.
+
+### Değişen ve Eklenen Dosyalar
+- `backend/strategy-service/src/main/resources/db/migration/V1__strategy.sql`
+- `backend/strategy-service/src/main/resources/db/migration/V2__analysis_context.sql`
+- `backend/strategy-service/src/main/resources/db/migration/V3__backfill_and_scan_items.sql`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/domain/model/PredictionResult.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/domain/service/NumericPolicy.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/domain/service/ExplanationTemplate.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/port/ModelClient.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/port/SessionContextReader.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/port/MarketCoveragePort.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/port/ExplanationClient.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/port/MarketUniversePort.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/repository/AnalysisJobRepository.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/repository/ScanJobRepository.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/service/AnalysisFlow.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/service/AnalysisJobTransactions.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/service/AnalysisWorker.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/application/service/ScanService.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/repository/JdbcAnalysisJobRepository.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/repository/JdbcScanJobRepository.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/client/HttpModelClient.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/client/fixture/FakeModelClient.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/client/fixture/FixtureSessionContextReader.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/client/fixture/FixtureMarketCoveragePort.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/client/fixture/FixtureExplanationClient.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/client/fixture/FixtureMarketUniversePort.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/config/ModelClientConfig.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/infrastructure/config/StrategyBeansConfig.java`
+- `backend/strategy-service/src/main/java/com/crypto/strategyservice/api/controller/StrategyController.java`
+- `backend/strategy-service/src/test/java/com/crypto/strategyservice/StrategyFlowTest.java`
+- `backend/strategy-service/src/test/java/com/crypto/strategyservice/HttpModelClientTest.java`
+- `backend/strategy-service/src/test/java/com/crypto/strategyservice/AnalysisJobRepositoryIT.java`
+- `backend/strategy-service/src/test/java/com/crypto/strategyservice/StrategyB09IT.java`
+- `backend/strategy-service/src/test/java/com/crypto/strategyservice/StrategyServiceApplicationTests.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/api/dto/request/AiPreviewRequest.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/api/dto/request/ManualPreviewRequest.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/application/port/ProposalReader.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/application/service/AiPreviewService.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/domain/service/PreviewFactory.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/infrastructure/client/FixtureProposalReader.java`
+- `backend/simulation-service/src/test/java/com/crypto/simulationservice/AiProposalPreviewIT.java`
+
+### Çalıştırılan Komutlar ve Görülen Çıktı
+Komut:
+```powershell
+$env:DB_PASSWORD='2002'; $env:STRATEGY_TEST_DB_PASSWORD='2002'; mvn -f backend/pom.xml -pl strategy-service,simulation-service -am test "-Dtest=StrategyFlowTest,HttpModelClientTest,AnalysisJobRepositoryIT,StrategyB09IT,StrategyServiceApplicationTests,AiProposalPreviewIT,ExecutionAndPreviewTest,OrderSubmissionIT" "-Dsurefire.failIfNoSpecifiedTests=false"
+```
+Görülen çıktı:
+- `simulation-service`: `Tests run: 12, Failures: 0, Errors: 0, Skipped: 0` (`AiProposalPreviewIT`: 3, `ExecutionAndPreviewTest`: 6, `OrderSubmissionIT`: 3) — `SUCCESS`
+- `strategy-service`: `Tests run: 29, Failures: 0, Errors: 0, Skipped: 0` (`AnalysisJobRepositoryIT`: 5, `HttpModelClientTest`: 6, `StrategyB09IT`: 6, `StrategyFlowTest`: 11, `StrategyServiceApplicationTests`: 1) — `SUCCESS`
+- Toplam: `BUILD SUCCESS`
+
+### Fixture ve Gerçek Entegrasyon Sınırı
+- **PASS (Doğrulananlar):** Yerel PostgreSQL üzerinde `strategy_test_db` (`V1__strategy.sql`, `V2__analysis_context.sql`, `V3__backfill_and_scan_items.sql`) ve `simulation_test_db` şemalarında tüm kalıcı job/proposal/scan/preview/approval akışları, `HttpModelClient` yerel HTTP sözleşme testleri ve `FakeModelClient` (`DEVELOPMENT_CANDIDATE` / `FIXTURE_MODEL`) etiketli fixture testleri çalıştırılıp doğrulandı.
+- **INTEGRATION_PENDING (Canlı AI / A05 Sınırı):** Gerçek Python AI servisi (`A05`) henüz eğitilmediği ve ayağa kaldırılmadığı için canlı `A05` süreciyle uçtan uca entegrasyon `INTEGRATION_PENDING` olarak kaydedilmiştir; `DEVELOPMENT_CANDIDATE` fixture çıktıları `ACTIVE` üretim modeli kalite onayı (`A09`) sayılmaz.
+
+---
+
+### Sıradaki Tek Adım
+- **Görev:** `B10` (veya kullanıcının paylaşacağı sıradaki görev MD'si)
+- **Hedef:** Kullanıcının paylaşacağı bir sonraki görev MD'si ile devam etmek.
