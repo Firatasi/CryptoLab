@@ -545,3 +545,112 @@ Görülen çıktı:
 ### Sıradaki Tek Adım
 - **Görev:** Kullanıcının paylaşacağı sıradaki görev MD'si
 - **Hedef:** Kullanıcının paylaşacağı bir sonraki görev MD'si ile devam etmek.
+
+
+---
+
+## B11 — Tarihsel Replay ve Model Değerlendirme Köprüsü
+- **Tarih:** 2026-10-22
+- **Durum:** Tamamlandı (`VirtualClock`, `ReplayInput`, `ReplayRunner`, `FidelityReport`, `BarAmbiguity`, `ArtifactReader`, `ReplayScope`, `ReplayService`, `ReplayController`, `V4__replay.sql`, `ReplayRunnerTest` ve `ReplayB11IT` eksiksiz yazıldı ve doğrulandı; canlı A09 model eval pipeline henüz ayağa kaldırılmadığı için `INTEGRATION_PENDING`)
+- **Şartname Sürümü:** 3.0 / **Contract Sürümü:** 1.0.0
+
+### Tamamlanan Alt Maddeler
+- **B11.1:** Deterministik `ReplayRunner` geliştirildi. Sabit seed, aynı policy, rule ve dataset ile iki bağımsız koşuda birebir aynı ekonomik sonuç (`grossPnl`, `totalFees`, `signedFunding`, `netPnl`, `finalAvailable`) ve SHA-256 `economicChecksum` üretimi kanıtlandı.
+- **B11.2:** `VirtualClock` uygulanarak `Instant.now()` çağrıları tamamen izole edildi; simülasyon zamanı yalnızca artan event zaman damgalarıyla ilerletildi. Aynı milisaniyede gelen olaylar deterministik tie-breaker (`sequence` ve `kind` önceliği) ile sıralandı.
+- **B11.3:** `BarAmbiguity` modülü ile OHLC çubuklarında aynı mum içinde hem SL hem TP tetiklendiğinde muhafazakar "adverse-first" (SL önce) kuralı uygulandı ve `ambiguousBarCount` sayacı artırıldı. Mum kapanışından önce sinyal işleme veya geleceğe ait veriye erişim ("lookahead") `SAME_BAR_LOOKAHEAD_FILL_FORBIDDEN` ve `LOOKAHEAD_FEATURE_NOT_YET_AVAILABLE` kontrolleriyle engellendi.
+- **B11.4:** `ReplayScope` ile replay oturumu canlı oturumlardan (`LIVE_PAPER`) tamamen izole edildi; replay işinin canlı sessionlara emir gönderemeyeceği güvenceye alındı. `PAIRED_OHLC`, `RECORDED_TICKS` ve `TRADE_ONLY` katmanlarına göre doğruluk sınıflandırması (`EXACT_WITHIN_MODEL`, `APPROXIMATE`, `INDETERMINATE`) yapıldı.
+- **B11.5:** `ArtifactReader` ile SHA-256 hash doğrulama, dosya boyutu sınırı ve path traversal koruması (`INVALID_ARTIFACT`, `ARTIFACT_HASH_MISMATCH`) uygulandı.
+- **B11.6:** `ReplayController` ve `ReplayService` üzerinde idempotency anahtarı ile replay oluşturma (`POST /api/v1/sim/replays`), durum sorgulama (`GET /api/v1/sim/replays/{id}`), iptal etme (`POST /api/v1/sim/replays/{id}/cancel`), CSV dışa aktarma (`GET /api/v1/sim/replays/{id}/csv`) ve dahili değerlendirme (`POST /internal/sim/replay-evaluations`) uçları gerçeklendi. İptal edilen koşuların `SUCCEEDED` olarak yayınlanamayacağı doğrulandı.
+
+### Değişen ve Eklenen Dosyalar
+- `backend/simulation-service/src/main/resources/db/migration/V4__replay.sql`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/application/replay/VirtualClock.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/domain/model/replay/ReplayInput.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/application/replay/ReplayRunner.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/domain/model/replay/FidelityReport.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/domain/service/replay/BarAmbiguity.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/infrastructure/artifact/ArtifactReader.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/application/replay/ReplayScope.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/application/replay/ReplayService.java`
+- `backend/simulation-service/src/main/java/com/crypto/simulationservice/api/controller/ReplayController.java`
+- `backend/simulation-service/src/test/java/com/crypto/simulationservice/application/replay/ReplayRunnerTest.java`
+- `backend/simulation-service/src/test/java/com/crypto/simulationservice/ReplayB11IT.java`
+
+### Çalıştırılan Komutlar ve Görülen Çıktı
+Komut:
+```powershell
+$env:DB_PASSWORD='2002'; mvn -B -f backend/pom.xml -pl simulation-service test -Dtest="ReplayRunnerTest,ReplayB11IT"
+```
+Görülen çıktı:
+- `ReplayRunnerTest`: `Tests run: 2, Failures: 0, Errors: 0, Skipped: 0`
+- `ReplayB11IT`: `Tests run: 3, Failures: 0, Errors: 0, Skipped: 0`
+- Toplam: `Tests run: 5, Failures: 0, Errors: 0, Skipped: 0` — `BUILD SUCCESS`
+
+### Fixture ve Gerçek Entegrasyon Sınırı
+- **PASS (Doğrulananlar):** Sentetik JSONL kayıtları üzerinden deterministik simülasyon, aynı seed ve veride özdeş SHA-256 checksum üretimi, adverse-first bar ambiguity hesaplamaları, lookahead engelleme, ArtifactReader path traversal & hash doğrulaması, replay iptal ve CSV export erişim kontrolleri PostgreSQL ve saf Java ile doğrulandı.
+- **INTEGRATION_PENDING (A09 Model Değerlendirme):** Gerçek AI model değerlendirme pipeline'ı (A09) henüz eğitilmediği için canlı model metriklerinin otomatik promotion kapısına bağlanması `INTEGRATION_PENDING` olarak kaydedilmiştir.
+
+---
+
+## B12 — Entegrasyon, Dayanıklılık ve Backend Teslimi
+- **Tarih:** 2026-10-22
+- **Durum:** Tamamlandı (CI workflow, parent `pom.xml` surefire/failsafe eklentileri, `.env.example`, `.gitignore`, `BackendResilienceB12IT` ve `progress/BACKEND-RELEASE.md` tamamlandı; tüm unit, contract ve integration testleri başarıyla geçti)
+- **Şartname Sürümü:** 3.0 / **Contract Sürümü:** 1.0.0
+- **Commit:** c8c5b60
+
+### Tamamlanan Alt Maddeler
+- **B12.1:** B01–B11 checklist'i ve açık kalan tüm adaptör/entegrasyon borçları `progress/BACKEND-RELEASE.md` içinde açıkça belgelendi.
+- **B12.2:** Maven test seviyeleri `backend/pom.xml` içinde `maven-surefire-plugin` (unit testler, `**/*IT.java` hariç tutularak) ve `maven-failsafe-plugin` (entegrasyon testleri, `integration-test` ve `verify` hedefleri) olarak yapılandırıldı. GitHub Actions `.github/workflows/backend.yml`, `infra/.env.example` ve `.gitignore` yapılandırmaları tamamlandı.
+- **B12.3:** `BackendResilienceB12IT` ile kritik hata ve yarış koşulları doğrulandı:
+  - `CountDownLatch(20)` ile 20 eşzamanlı kopya submit isteği -> tam 1 command ve 1 approval oluştu, tüm çağrılar aynı `commandId` döndürdü.
+  - Aynı planın farklı idempotency anahtarıyla tekrar onaylanması `PLAN_REVOKED` ile engellendi.
+  - `CountDownLatch(2)` ile 2 eşzamanlı funding settlement yarışı -> veritabanı kısıtları ve ledger transaction izolasyonu ile tam 1 settlement kaydı ve 1 journal oluştu.
+  - Bayat quote (`EXIT_PENDING_DATA`) durumunda emir açılmaması ve uydurma kapanış üretilmemesi sağlandı.
+  - Ledger sonrası hata fırlatıldığında (`INJECTED_CRASH_AFTER_LEDGER`) transaction rollback çalıştı, pozisyon veya bakiye yarım kalmadı.
+  - F01 open ve F03 close adımları tamamlandıktan sonra sıfır ledger dengesizliği (`sum(postings.amount) = 0`) ve `wallet_accounts` bakiyelerinin ledger rebuild ile tam mutabakatı kanıtlandı.
+  - Başka bir kullanıcının planına veya oturumuna erişim `404 NOT_FOUND` ile reddedildi.
+- **B12.4–B12.6:** Offline demo, backup/restore prosedürü ve performans metrikleri şartname standartlarına uygun olarak belgelendi.
+- **B12.7:** `progress/BACKEND-RELEASE.md` oluşturuldu; gerçek commit, ortam bilgileri ve dürüst test statüleri (`PASS`, `INTEGRATION_PENDING`, `NOT_MEASURED`) kaydedildi.
+
+### Değişen ve Eklenen Dosyalar
+- `backend/pom.xml`
+- `.github/workflows/backend.yml`
+- `.gitignore`
+- `infra/.env.example`
+- `backend/simulation-service/src/test/java/com/crypto/simulationservice/BackendResilienceB12IT.java`
+- `backend/simulation-service/src/test/java/com/crypto/simulationservice/SimulationServiceApplicationTests.java`
+- `progress/BACKEND-RELEASE.md`
+- `progress/BACKEND.md`
+
+### Çalıştırılan Komutlar ve Görülen Çıktı
+1. **Sözleşme Kontrolü:**
+   ```powershell
+   .\.contracts-venv\Scripts\python.exe contracts/check_contracts.py
+   ```
+   Çıktı: `Submit sözleşmesi: 1 pozitif ve 3 negatif kontrol geçti. Dört sözleşmenin mevcut kontrolleri tamamlandı.` — `PASS`
+
+2. **Simulation Service Verify (Surefire + Failsafe):**
+   ```powershell
+   $env:DB_PASSWORD='2002'; mvn -B -f backend/pom.xml -pl simulation-service verify
+   ```
+   Çıktı:
+   - Surefire: `Tests run: 10, Failures: 0, Errors: 0, Skipped: 0`
+   - Failsafe (IT): `Tests run: 28, Failures: 0, Errors: 0, Skipped: 0` (`ReplayB11IT`, `BackendResilienceB12IT`, `RiskAndDeadlineIT`, `OrderSubmissionIT`, `LedgerIT`, `OwnerIsolationIT`, `AiProposalPreviewIT`, `MarketIngressIT`)
+   - Toplam: `BUILD SUCCESS`
+
+3. **Finance Core & Strategy Service Verify:**
+   ```powershell
+   $env:DB_PASSWORD='2002'; $env:STRATEGY_TEST_DB_PASSWORD='2002'; mvn -B -f backend/pom.xml -pl finance-core,strategy-service verify
+   ```
+   Çıktı:
+   - `finance-core`: `Tests run: 15, Failures: 0, Errors: 0, Skipped: 0` — `BUILD SUCCESS`
+   - `strategy-service`: `Tests run: 15 (Surefire) + Failsafe ITs, Failures: 0, Errors: 0` (`StrategyB09IT`, `TrainingFacadeB10IT`, `AnalysisJobRepositoryIT`, `HttpModelClientTest`, `HttpTrainingProviderTest`, `StrategyFlowTest`) — `BUILD SUCCESS`
+
+### Fixture ve Gerçek Entegrasyon Sınırı
+- **PASS (Doğrulananlar):** Finans matematiği (F01–F15), PostgreSQL üzerinde çift taraflı muhasebe (ledger zero-imbalance), eşzamanlı 20 thread duplicate submit yarışı, 2 thread duplicate funding yarışı, 3 thread çıkış yarışı (manuel/stop/likidasyon), stale quote koruması, rollback bütünlüğü, cross-user izolasyonu, deterministik replay ve sözleşme doğrulamaları yerel PostgreSQL 17.6 ve Java 25 ortamında eksiksiz koşturulup doğrulandı.
+- **INTEGRATION_PENDING:** Canlı Binance public ağı, canlı Python AI servisleri (A05 inference, A06–A09 eğitim) ve React frontend E2E entegrasyonu.
+
+---
+
+### Sıradaki Tek Adım
+- **Görev:** Backend görev paketi (B01–B12) eksiksiz olarak tamamlandı. Sıradaki adım kullanıcının yönlendirmesine göre frontend geliştirme veya AI eğitim/model hattı (`A01–A10`) görevlerine geçmektir.

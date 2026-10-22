@@ -25,8 +25,26 @@ import java.util.Base64;
 public class TokenConfig {
 
     private static byte[] readPem(String file) throws Exception {
-        String content = Files.readString(Path.of(file))
-                .replaceAll("-----[^-]+-----", "")
+        if (file == null || file.isBlank()) {
+            throw new IllegalArgumentException("KEY_PATH_REQUIRED");
+        }
+        String content;
+        Path path = Path.of(file);
+        if (Files.exists(path)) {
+            content = Files.readString(path);
+        } else {
+            var stream = TokenConfig.class.getResourceAsStream(file.startsWith("/") ? file : "/" + file);
+            if (stream == null) {
+                stream = TokenConfig.class.getClassLoader().getResourceAsStream(file);
+            }
+            if (stream != null) {
+                content = new String(stream.readAllBytes());
+            } else {
+                content = Files.readString(path);
+            }
+        }
+
+        content = content.replaceAll("-----[^-]+-----", "")
                 .replaceAll("\\s", "");
 
         return Base64.getDecoder().decode(content);

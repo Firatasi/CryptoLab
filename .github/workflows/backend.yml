@@ -1,0 +1,29 @@
+name: backend
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: backend/**/pom.xml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r contracts/requirements.txt
+      - run: python contracts/check_contracts.py
+      # Testcontainers runner Docker'ını kullanır; gerçek borsa/AI sırrı gerekmez.
+      - run: mvn -B -f backend/pom.xml clean verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-test-results
+          path: |
+            backend/**/target/surefire-reports/**
+            backend/**/target/failsafe-reports/**
+# Release öncesinde action tag'lerini doğrulanmış commit SHA'larına pinle.
+
