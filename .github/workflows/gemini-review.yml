@@ -1,4 +1,4 @@
-name: "Gemini 3.8 Flash Code Review (PR & Commit Inline)"
+name: "Gemini Review"
 
 on:
   pull_request:
@@ -10,9 +10,12 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  statuses: write
+  checks: write
 
 jobs:
-  gemini-code-review:
+  gemini-review:
+    name: "Gemini Review"
     runs-on: ubuntu-latest
     steps:
       - name: Repo Kodunu Çek
@@ -28,7 +31,7 @@ jobs:
       - name: Gerekli Paketleri Yükle
         run: pip install google-genai requests
 
-      - name: Gemini 3.8 Flash İle Satır İçi (Inline) Kod İncelemesi Yap
+      - name: Gemini Review
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -45,6 +48,7 @@ jobs:
           import os
           import re
           import subprocess
+          import time
           import requests
           from google import genai
           from google.genai import types
@@ -64,7 +68,7 @@ jobs:
               if not BASE_SHA or BASE_SHA == "0000000000000000000000000000000000000000":
                   BASE_SHA = f"{HEAD_SHA}~1"
 
-          # 1. Diff çıktısını al ve satır numaralarını (RIGHT side) + diff pozisyonunu etiketle
+          # 1. Diff çıktısını al ve satır numaralarını etiketle
           try:
               raw_diff = subprocess.check_output(
                   ["git", "diff", "--unified=3", BASE_SHA, HEAD_SHA],
@@ -79,7 +83,7 @@ jobs:
               )
 
           if not raw_diff.strip():
-              print("Değişiklik bulunamadı, inceleme atlanıyor.")
+              print("::notice title=Gemini Review::Değişiklik bulunamadı, inceleme atlandı.")
               raise SystemExit(0)
 
           valid_lines = {}
@@ -118,10 +122,15 @@ jobs:
               else:
                   annotated_diff_lines.append(line)
 
-          annotated_diff = "\n".join(annotated_diff_lines)[:120000]
+          annotated_diff = "\n".join(annotated_diff_lines)[:100000]
 
-          # 2. Gemini 3.8 Flash modelinden yapılandırılmış JSON incelemesi al
+          # 2. Yoğunluk (503 UNAVAILABLE) hatasına karşı otomatik model fallback zinciri
           client = genai.Client(api_key=GEMINI_API_KEY)
+          MODEL_CHAIN = [
+              "gemini-2.5-flash",
+              "gemini-2.5-flash-lite",
+              "gemini-2.0-flash",
+          ]
 
           prompt = f"""
           Sen Kıdemli bir Yazılım Mimarı ve Güvenlik Uzmanısın (Staff Engineer).
@@ -129,6 +138,7 @@ jobs:
 
           Lütfen tamamen TÜRKÇE olarak aşağıdaki JSON şemasında çıktı üret:
           {{
+            "short_title": "Commit mesajı gibi tek satırlık (maksimum 90 karakter) net inceleme özeti",
             "summary": "Bu değişikliğin ne yaptığını anlatan 1-2 cümlelik net özet.",
             "scores": {{
               "security": "🟢 Güvenli | 🟡 Dikkat | 🔴 Riskli (Kısa 3-5 kelimelik açıklama)",
@@ -141,7 +151,7 @@ jobs:
                 "line": 42,
                 "severity": "🔴 Kritik | 🟡 Uyarı | 🔵 Öneri",
                 "issue": "Sorunun veya hatanın ne olduğunu 1-2 cümlede net ve anlaşılır şekilde açıkla.",
-                "suggestion_code": "Sadece o satırın yerine geçecek düzeltilmiş kod (eğer doğrudan kod önerisi varsa yaz, yoksa boş bırak)"
+                "suggestion_code": "Sadece o satırın yerine geçecek düzeltilmiş kod (varsa yaz, yoksa boş bırak)"
               }}
             ]
           }}
@@ -155,22 +165,60 @@ jobs:
           {annotated_diff}
           """
 
-          response = client.models.generate_content(
-              model="gemini-3.8-flash",
-              contents=prompt,
-              config=types.GenerateContentConfig(
-                  temperature=0.2,
-                  response_mime_type="application/json",
-              ),
-          )
+          response = None
+          used_model = None
+          for candidate_model in MODEL_CHAIN:
+              for attempt in range(2):
+                  try:
+                      response = client.models.generate_content(
+                          model=candidate_model,
+                          contents=prompt,
+                          config=types.GenerateContentConfig(
+                              temperature=0.2,
+                              response_mime_type="application/json",
+                          ),
+                      )
+                      used_model = candidate_model
+                      break
+                  except Exception as err:
+                      print(f"Model {candidate_model} (deneme {attempt + 1}) hata verdi: {err}")
+                      time.sleep(3 * (attempt + 1))
+              if response is not None:
+                  break
+
+          headers = {
+              "Authorization": f"Bearer {GITHUB_TOKEN}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          if response is None:
+              msg = "Gemini API sunucuları şu an yoğun (503). İnceleme bir sonraki commit'te tekrar çalışacak."
+              print(f"::notice title=Gemini Review::{msg}")
+              requests.post(
+                  f"https://api.github.com/repos/{REPO}/statuses/{HEAD_SHA}",
+                  headers=headers,
+                  json={
+                      "state": "success",
+                      "context": "Gemini Review",
+                      "description": msg[:135],
+                  },
+              )
+              raise SystemExit(0)
 
           data = json.loads(response.text)
-
-          # 3. Üst Özet Tablosu (Scorecard) oluştur
+          short_title = (data.get("short_title") or data.get("summary") or "Kod incelendi, sorun bulunmadı.").strip()
+          summary_text = data.get("summary", "Kod değişiklikleri incelendi.")
           scores = data.get("scores", {})
+          inline_list = data.get("inline_comments", [])
+
+          # GitHub Actions ana ekranında (tıklamadan direkt üstte) görünmesi için Notice & Warning annotation bas
+          print(f"::notice title=Gemini Review Özeti::{short_title} — {summary_text}")
+
           summary_md = (
-              "## 🤖 Gemini 3.8 Flash Profesyonel Kod İnceleme Raporu\n\n"
-              f"**Özet:** {data.get('summary', 'Kod değişiklikleri incelendi.')}\n\n"
+              f"## 🤖 Gemini Review (`{used_model}`)\n\n"
+              f"**📌 {short_title}**\n\n"
+              f"{summary_text}\n\n"
               "| Kategori | Durum |\n"
               "| :--- | :--- |\n"
               f"| **🔒 Güvenlik** | {scores.get('security', '🟢 İncelendi')} |\n"
@@ -182,12 +230,16 @@ jobs:
           gh_commit_comments = []
           fallback_comments = []
 
-          for c in data.get("inline_comments", []):
+          for c in inline_list:
               path = c.get("path", "")
               line_no = int(c.get("line", 0))
               severity = c.get("severity", "🟡 Uyarı")
               issue = c.get("issue", "")
               suggestion_code = (c.get("suggestion_code") or "").strip()
+
+              # GitHub arayüzünde doğrudan dosya/satır üzerinde kutu olarak göster
+              clean_issue = issue.replace("\n", " ")
+              print(f"::warning file={path},line={line_no},title=Gemini Review ({severity})::{clean_issue}")
 
               comment_body = f"**{severity}**\n\n{issue}"
               if suggestion_code:
@@ -216,19 +268,24 @@ jobs:
           elif not gh_pr_comments:
               summary_md += "\n✅ **Herhangi bir kritik hata veya güvenlik açığı tespit edilmedi. Kod temiz görünüyor!**"
 
-          # GitHub Actions özet ekranına da bas
           step_summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if step_summary_path:
               with open(step_summary_path, "a", encoding="utf-8") as sf:
                   sf.write(summary_md + "\n")
 
-          headers = {
-              "Authorization": f"Bearer {GITHUB_TOKEN}",
-              "Accept": "application/vnd.github+json",
-              "X-GitHub-Api-Version": "2022-11-28",
-          }
+          # Commit'in hemen yanında "Gemini Review — <commit mesajı gibi tek satır özet>" olarak görünmesini sağla
+          status_desc = f"({len(inline_list)} bulgu) {short_title}"[:135]
+          requests.post(
+              f"https://api.github.com/repos/{REPO}/statuses/{HEAD_SHA}",
+              headers=headers,
+              json={
+                  "state": "success",
+                  "context": "Gemini Review",
+                  "description": status_desc,
+              },
+          )
 
-          # 4A. Eğer Pull Request ise doğrudan PR altına ve satırlarına bas
+          # PR varsa PR altına, yoksa doğrudan Commit altına yorum bırak (repo ana sayfasında 💬 ikonu çıkar)
           if EVENT_NAME == "pull_request" and PR_NUMBER:
               url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/reviews"
               payload = {
@@ -241,7 +298,6 @@ jobs:
               if res.status_code >= 300:
                   payload.pop("comments", None)
                   requests.post(url, headers=headers, json=payload)
-          # 4B. Doğrudan Commit (push) atıldıysa doğrudan Commit sayfasının ve satırlarının altına yorum bas
           else:
               commit_url = f"https://api.github.com/repos/{REPO}/commits/{HEAD_SHA}/comments"
               requests.post(commit_url, headers=headers, json={"body": summary_md})
