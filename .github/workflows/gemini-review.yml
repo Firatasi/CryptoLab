@@ -1,29 +1,212 @@
-name: Gemini AI Code Review
+name: "Gemini Pro AI Code Review (Inline + Scorecard)"
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  review:
+  gemini-code-review:
     runs-on: ubuntu-latest
     steps:
-      - name: Kodu Klonla
+      - name: Repo Kodunu Çek
         uses: actions/checkout@v4
-
-      - name: Gemini PR Reviewer Çalıştır
-        uses: rubensflinco/gemini-code-review-action@main
         with:
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          github_repository: ${{ github.repository }}
-          github_pull_request_number: ${{ github.event.pull_request.number }}
-          git_commit_hash: ${{ github.event.pull_request.head.sha }}
-          model: "gemini-2.5-flash"
-          temperature: 0.2
-          max_tokens: 2048
-          extra_prompt: "Lütfen kod inceleme (code review) yorumlarını Türkçe olarak yaz."
+          fetch-depth: 0
+
+      - name: Python Kurulumu
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Gerekli Paketleri Yükle
+        run: pip install google-genai requests
+
+      - name: Gemini İle Satır İçi (Inline) ve Profesyonel PR İncelemesi Yap
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMIT_ID: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - << 'EOF'
+          import json
+          import os
+          import re
+          import subprocess
+          import requests
+          from google import genai
+          from google.genai import types
+
+          GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+          GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+          REPO = os.environ["GITHUB_REPOSITORY"]
+          PR_NUMBER = os.environ["PR_NUMBER"]
+          COMMIT_ID = os.environ["COMMIT_ID"]
+          BASE_SHA = os.environ["BASE_SHA"]
+          HEAD_SHA = os.environ["HEAD_SHA"]
+
+          # 1. PR içindeki diff çıktısını al ve satır numaralarını (RIGHT side) etiketle
+          raw_diff = subprocess.check_output(
+              ["git", "diff", "--unified=3", BASE_SHA, HEAD_SHA],
+              text=True,
+              errors="replace",
+          )
+
+          if not raw_diff.strip():
+              print("Değişiklik bulunamadı, inceleme atlanıyor.")
+              raise SystemExit(0)
+
+          valid_lines = set()
+          annotated_diff_lines = []
+          current_file = None
+          new_line_num = None
+
+          for line in raw_diff.splitlines():
+              if line.startswith("+++ b/"):
+                  current_file = line[6:].strip()
+                  annotated_diff_lines.append(line)
+              elif line.startswith("@@ "):
+                  # Örn: @@ -10,5 +12,8 @@
+                  m = re.search(r"\+(\d+)", line)
+                  if m:
+                      new_line_num = int(m.group(1))
+                  annotated_diff_lines.append(line)
+              elif current_file and new_line_num is not None:
+                  if line.startswith("+") and not line.startswith("+++"):
+                      valid_lines.add((current_file, new_line_num))
+                      annotated_diff_lines.append(f"[SATIR:{new_line_num}] {line}")
+                      new_line_num += 1
+                  elif line.startswith("-") and not line.startswith("---"):
+                      annotated_diff_lines.append(line)
+                  elif line.startswith(" "):
+                      valid_lines.add((current_file, new_line_num))
+                      annotated_diff_lines.append(f"[SATIR:{new_line_num}] {line}")
+                      new_line_num += 1
+                  else:
+                      annotated_diff_lines.append(line)
+              else:
+                  annotated_diff_lines.append(line)
+
+          annotated_diff = "\n".join(annotated_diff_lines)[:120000]
+
+          # 2. Gemini'dan yapılandırılmış JSON formatında profesyonel inceleme iste
+          client = genai.Client(api_key=GEMINI_API_KEY)
+
+          prompt = f"""
+          Sen Kıdemli bir Yazılım Mimarı ve Güvenlik Uzmanısın (Staff Engineer).
+          Aşağıdaki Pull Request kod değişikliklerini (git diff) incele. Diff içindeki `[SATIR:X]` etiketleri yeni dosyadaki gerçek satır numarasını gösterir.
+
+          Lütfen tamamen TÜRKÇE olarak aşağıdaki JSON şemasında çıktı üret:
+          {{
+            "summary": "Bu PR'ın ne yaptığını anlatan 1-2 cümlelik net özet.",
+            "scores": {{
+              "security": "🟢 Güvenli | 🟡 Dikkat | 🔴 Riskli (Kısa 3-5 kelimelik açıklama)",
+              "performance": "🟢 İyi | 🟡 Orta | 🔴 Sorunlu (Kısa 3-5 kelimelik açıklama)",
+              "maintainability": "🟢 Temiz | 🟡 Orta | 🔴 Karmaşık (Kısa 3-5 kelimelik açıklama)"
+            }},
+            "verdict": "COMMENT",
+            "inline_comments": [
+              {{
+                "path": "dosya/yolu.uzanti",
+                "line": 42,
+                "severity": "🔴 Kritik | 🟡 Uyarı | 🔵 Öneri",
+                "issue": "Sorunun veya hatanın ne olduğunu 1-2 cümlede net ve anlaşılır şekilde açıkla.",
+                "suggestion_code": "Sadece o satırın yerine geçecek düzeltilmiş kod (eğer tek satırlık/doğrudan kod önerisi varsa yaz, yoksa boş bırak)"
+              }}
+            ]
+          }}
+
+          KURALLAR:
+          1. Boş laf kalabalığı yapma, sadece gerçek hatalar, güvenlik açıkları, performans kayıpları veya önemli temiz kod iyileştirmeleri için `inline_comments` ekle.
+          2. `line` değeri kesinlikle diff içindeki `[SATIR:X]` numarasıyla eşleşmelidir.
+          3. `suggestion_code` içine ``` işareti koyma, sadece saf kodu yaz (sistem onu GitHub suggestion bloğuna çevirecek).
+
+          İNCELENECEK DIFF:
+          {annotated_diff}
+          """
+
+          response = client.models.generate_content(
+              model="gemini-2.5-flash",
+              contents=prompt,
+              config=types.GenerateContentConfig(
+                  temperature=0.2,
+                  response_mime_type="application/json",
+              ),
+          )
+
+          data = json.loads(response.text)
+
+          # 3. GitHub PR Scorecard (Üst Özet Tablosu) oluştur
+          scores = data.get("scores", {})
+          summary_md = (
+              "## 🤖 Gemini AI Profesyonel Kod İnceleme Raporu\n\n"
+              f"**Özet:** {data.get('summary', 'Kod değişiklikleri incelendi.')}\n\n"
+              "| Kategori | Durum |\n"
+              "| :--- | :--- |\n"
+              f"| **🔒 Güvenlik** | {scores.get('security', '🟢 İncelendi')} |\n"
+              f"| **⚡ Performans** | {scores.get('performance', '🟢 İncelendi')} |\n"
+              f"| **🧹 Kod Kalitesi** | {scores.get('maintainability', '🟢 İncelendi')} |\n"
+          )
+
+          # 4. Satır içi (Inline) yorumları hazırla
+          gh_comments = []
+          fallback_comments = []
+
+          for c in data.get("inline_comments", []):
+              path = c.get("path", "")
+              line_no = int(c.get("line", 0))
+              severity = c.get("severity", "🟡 Uyarı")
+              issue = c.get("issue", "")
+              suggestion_code = (c.get("suggestion_code") or "").strip()
+
+              comment_body = f"**{severity}**\n\n{issue}"
+              if suggestion_code:
+                  comment_body += f"\n\n```suggestion\n{suggestion_code}\n```"
+
+              if (path, line_no) in valid_lines:
+                  gh_comments.append({
+                      "path": path,
+                      "line": line_no,
+                      "side": "RIGHT",
+                      "body": comment_body,
+                  })
+              else:
+                  fallback_comments.append(
+                      f"- **`{path}` (Satır {line_no}) — {severity}:** {issue}"
+                      + (f"\n  ```\n  {suggestion_code}\n  ```" if suggestion_code else "")
+                  )
+
+          if fallback_comments:
+              summary_md += "\n### 📌 Ek Satır Bulguları\n" + "\n".join(fallback_comments)
+          elif not gh_comments:
+              summary_md += "\n✅ **Herhangi bir kritik hata veya güvenlik açığı tespit edilmedi. Kod temiz görünüyor!**"
+
+          # 5. GitHub Pull Request Review API'ye gönder
+          headers = {
+              "Authorization": f"Bearer {GITHUB_TOKEN}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          payload = {
+              "commit_id": COMMIT_ID,
+              "body": summary_md,
+              "event": "COMMENT",
+              "comments": gh_comments,
+          }
+
+          url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/reviews"
+          res = requests.post(url, headers=headers, json=payload)
+          if res.status_code >= 300:
+              print("Inline yorum gönderilemedi, genel özet olarak gönderiliyor:", res.text)
+              payload.pop("comments", None)
+              requests.post(url, headers=headers, json=payload)
+          else:
+              print(f"Başarıyla {len(gh_comments)} satır içi yorum ve özet tablo eklendi!")
+          EOF
