@@ -1,0 +1,4 @@
+-r requirements-training.in
+
+# Otomatik testleri calistirir.
+pytest>=8,<10

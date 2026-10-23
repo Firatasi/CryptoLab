@@ -1,0 +1,14 @@
+# İç HTTP API'si
+fastapi>=0.115,<1
+
+# FastAPI uygulamasını çalıştıran sunucu
+uvicorn>=0.30,<1
+
+# İstek ve yanıt modellerinin doğrulanması
+pydantic>=2.9,<3
+
+# Backend servislerine yapılacak HTTP çağrıları
+httpx>=0.27,<1
+
+# AI'nın kendi model_db veritabanına erişimi
+psycopg[binary]>=3.2,<4
