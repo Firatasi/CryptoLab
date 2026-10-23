@@ -7,17 +7,21 @@ jobs:
       postgres:
         image: postgres:17
         env:
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: test
           POSTGRES_DB: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
           --health-timeout 5s
           --health-retries 5
     env:
+      DB_USERNAME: postgres
       DB_PASSWORD: test
+      STRATEGY_TEST_DB_USERNAME: postgres
       STRATEGY_TEST_DB_PASSWORD: test
     steps:
       - uses: actions/checkout@v4

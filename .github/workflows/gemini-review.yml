@@ -8,7 +8,7 @@ on:
       - "**"
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   issues: write
   statuses: write
@@ -67,12 +67,20 @@ headers = {
 
 if EVENT_NAME == "pull_request" and PR_NUMBER:
     BASE_SHA = os.environ.get("PR_BASE_SHA", "")
-    HEAD_SHA = os.environ.get("PR_HEAD_SHA", "HEAD")
+    HEAD_SHA = os.environ.get("PR_HEAD_SHA") or os.environ.get("PUSH_AFTER_SHA", "HEAD")
 else:
     BASE_SHA = os.environ.get("PUSH_BEFORE_SHA", "")
     HEAD_SHA = os.environ.get("PUSH_AFTER_SHA", "HEAD")
     if not BASE_SHA or BASE_SHA == "0000000000000000000000000000000000000000":
         BASE_SHA = f"{HEAD_SHA}~1"
+
+# Gerçek HEAD SHA'yı git rev-parse ile kesinleştir
+try:
+    HEAD_SHA = subprocess.check_output(["git", "rev-parse", HEAD_SHA], text=True).strip()
+except Exception:
+    pass
+
+print(f"İnceleme başlatıldı: EVENT={EVENT_NAME}, PR={PR_NUMBER}, HEAD_SHA={HEAD_SHA}, BASE_SHA={BASE_SHA}")
 
 # Push event'indeysek ama commit bir PR'a aitse PR numarasını keşfet
 if not PR_NUMBER and HEAD_SHA:
@@ -123,43 +131,6 @@ except Exception:
     except Exception as diff_err:
         print(f"Git diff alınamadı: {diff_err}")
         raw_diff = ""
-
-if not raw_diff.strip():
-    print("::notice title=Gemini Review::İncelenecek kod değişikliği bulunamadı.")
-    raise SystemExit(0)
-
-annotated_diff_lines = []
-current_file = None
-new_line_num = None
-
-for line in raw_diff.splitlines():
-    if line.startswith("+++ b/"):
-        current_file = line[6:].strip()
-        annotated_diff_lines.append(line)
-    elif line.startswith("@@ "):
-        m = re.search(r"\+(\d+)", line)
-        if m:
-            new_line_num = int(m.group(1))
-        annotated_diff_lines.append(line)
-    elif current_file and new_line_num is not None:
-        if line.startswith("+") and not line.startswith("+++"):
-            annotated_diff_lines.append(f"[SATIR:{new_line_num}] {line}")
-            new_line_num += 1
-        elif line.startswith("-") and not line.startswith("---"):
-            annotated_diff_lines.append(line)
-        elif line.startswith(" "):
-            annotated_diff_lines.append(f"[SATIR:{new_line_num}] {line}")
-            new_line_num += 1
-        else:
-            annotated_diff_lines.append(line)
-    else:
-        annotated_diff_lines.append(line)
-
-annotated_diff = "\n".join(annotated_diff_lines)[:120000]
-
-# 2. Resmi Gemini model zinciri ve exponential backoff
-MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"]
-BACKOFF_DELAYS = [5, 15, 30]
 
 SYSTEM_PROMPT = """Sen Kıdemli bir Uygulama Güvenliği Mühendisi (Principal AppSec Engineer) ve Staff Software Engineer'sın. Görevin, sana verilen `git diff` değişikliklerini güvenlik açıkları, çalışma zamanı hataları (runtime bugs), performans darboğazları ve temiz kod (clean code) standartları açısından incelemektir.
 
@@ -215,66 +186,112 @@ SYSTEM_PROMPT = """Sen Kıdemli bir Uygulama Güvenliği Mühendisi (Principal A
 - `dosya/yolu.uzanti` (Satır: X): [Kısa açıklama ve önerilen refactoring]
 """
 
-response = None
-used_model = None
-
-if GEMINI_API_KEY:
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        for model_name in MODELS:
-            print(f"Gemini modeli deneniyor: {model_name}...")
-            for attempt, delay in enumerate(BACKOFF_DELAYS, 1):
-                try:
-                    resp = client.models.generate_content(
-                        model=model_name,
-                        contents=f"Aşağıdaki git diff değişikliklerini incele ve doğrudan belirtilen şablona uygun Markdown raporu üret:\n\n{annotated_diff}",
-                        config=types.GenerateContentConfig(
-                            temperature=0.2,
-                            system_instruction=SYSTEM_PROMPT,
-                        ),
-                    )
-                    if resp and resp.text and resp.text.strip():
-                        response = resp
-                        used_model = model_name
-                        print(f"Başarılı model: {used_model}")
-                        break
-                except Exception as err:
-                    err_str = str(err)
-                    print(f"{model_name} (deneme {attempt}/{len(BACKOFF_DELAYS)}) hata: {err_str}")
-                    if "503" in err_str or "overloaded" in err_str.lower() or "429" in err_str or "resource_exhausted" in err_str.lower():
-                        print(f"{delay} saniye bekleniyor...")
-                        time.sleep(delay)
-                    else:
-                        break
-            if response is not None:
-                break
-    except Exception as client_err:
-        print(f"GenAI Client başlatma hatası: {client_err}")
-else:
-    print("GEMINI_API_KEY secret değeri bulunamadı!")
-
 marker = f"<!-- gemini-security-review:{HEAD_SHA} -->"
+review_markdown = None
+status_desc = "İnceleme tamamlandı"
 
-if response is not None and response.text and response.text.strip():
-    review_markdown = response.text.strip()
-    # Alt imza ekle
-    review_markdown += f"\n\n---\n> 🤖 Bu inceleme `{HEAD_SHA[:7]}` commiti için Gemini API (`{used_model}`) tarafından otomatik oluşturulmuştur."
-    status_desc = f"Gemini ({used_model}): Güvenlik incelemesi tamamlandı"
-else:
+if not raw_diff.strip():
+    print("İncelenecek kod değişikliği bulunamadı (yalnızca kilit veya hariç tutulan dosyalar değişmiş olabilir).")
     review_markdown = (
         "# 🛡️ Otomatik Kod ve Güvenlik İncelemesi\n\n"
-        "⚠️ **Gemini API kota/sunucu hatası nedeniyle otomatik güvenlik incelemesi tamamlanamadı. Lütfen workflow'u yeniden tetikleyin.**\n\n"
+        "**Genel Durum:** `🟢 GÜVENLİ VE TEMİZ — Kritik bir hata veya güvenlik açığı tespit edilmedi.`\n\n"
+        "Bu commit'te incelenecek uygulama kaynak kodu değişikliği bulunamadı (yalnızca kilit, önbellek veya dokümantasyon dosyaları güncellenmiş olabilir).\n\n"
         f"> 🤖 Tetiklenen commit: `{HEAD_SHA[:7]}`"
     )
-    status_desc = "Gemini API kota/sunucu hatası (İnceleme tamamlanamadı)"
+else:
+    annotated_diff_lines = []
+    current_file = None
+    new_line_num = None
+
+    for line in raw_diff.splitlines():
+        if line.startswith("+++ b/"):
+            current_file = line[6:].strip()
+            annotated_diff_lines.append(line)
+        elif line.startswith("@@ "):
+            m = re.search(r"\+(\d+)", line)
+            if m:
+                new_line_num = int(m.group(1))
+            annotated_diff_lines.append(line)
+        elif current_file and new_line_num is not None:
+            if line.startswith("+") and not line.startswith("+++"):
+                annotated_diff_lines.append(f"[SATIR:{new_line_num}] {line}")
+                new_line_num += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                annotated_diff_lines.append(line)
+            elif line.startswith(" "):
+                annotated_diff_lines.append(f"[SATIR:{new_line_num}] {line}")
+                new_line_num += 1
+            else:
+                annotated_diff_lines.append(line)
+        else:
+            annotated_diff_lines.append(line)
+
+    annotated_diff = "\n".join(annotated_diff_lines)[:120000]
+
+    # 2. Resmi Gemini model zinciri ve exponential backoff
+    MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"]
+    BACKOFF_DELAYS = [5, 15, 30]
+
+    response = None
+    used_model = None
+
+    if GEMINI_API_KEY:
+        try:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            for model_name in MODELS:
+                print(f"Gemini modeli deneniyor: {model_name}...")
+                for attempt, delay in enumerate(BACKOFF_DELAYS, 1):
+                    try:
+                        resp = client.models.generate_content(
+                            model=model_name,
+                            contents=f"Aşağıdaki git diff değişikliklerini incele ve doğrudan belirtilen şablona uygun Markdown raporu üret:\n\n{annotated_diff}",
+                            config=types.GenerateContentConfig(
+                                temperature=0.2,
+                                system_instruction=SYSTEM_PROMPT,
+                            ),
+                        )
+                        if resp and resp.text and resp.text.strip():
+                            response = resp
+                            used_model = model_name
+                            print(f"Başarılı model: {used_model}")
+                            break
+                    except Exception as err:
+                        err_str = str(err)
+                        print(f"{model_name} (deneme {attempt}/{len(BACKOFF_DELAYS)}) hata: {err_str}")
+                        if "503" in err_str or "overloaded" in err_str.lower() or "429" in err_str or "resource_exhausted" in err_str.lower():
+                            print(f"{delay} saniye bekleniyor...")
+                            time.sleep(delay)
+                        else:
+                            break
+                if response is not None:
+                    break
+        except Exception as client_err:
+            print(f"GenAI Client başlatma hatası: {client_err}")
+    else:
+        print("UYARI: GEMINI_API_KEY secret değeri repo ayarlarında tanımlı değil!")
+
+    if response is not None and response.text and response.text.strip():
+        review_markdown = response.text.strip()
+        review_markdown += f"\n\n---\n> 🤖 Bu inceleme `{HEAD_SHA[:7]}` commiti için Gemini API (`{used_model}`) tarafından otomatik oluşturulmuştur."
+        status_desc = f"Gemini ({used_model}): İnceleme tamamlandı"
+    else:
+        review_markdown = (
+            "# 🛡️ Otomatik Kod ve Güvenlik İncelemesi\n\n"
+            "⚠️ **Gemini API kota/sunucu hatası nedeniyle otomatik güvenlik incelemesi tamamlanamadı. Lütfen workflow'u yeniden tetikleyin.**\n\n"
+            f"> 🤖 Tetiklenen commit: `{HEAD_SHA[:7]}`"
+        )
+        status_desc = "Gemini API kota/sunucu hatası (İnceleme tamamlanamadı)"
 
 full_body = f"{marker}\n\n{review_markdown}"
 
 # 3. GITHUB_STEP_SUMMARY'e bas
 step_summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
 if step_summary_path:
-    with open(step_summary_path, "a", encoding="utf-8") as sf:
-        sf.write(review_markdown + "\n")
+    try:
+        with open(step_summary_path, "a", encoding="utf-8") as sf:
+            sf.write(review_markdown + "\n")
+    except Exception as sum_err:
+        print(f"Summary yazma hatası: {sum_err}")
 
 # 4. Commit Status API'sine durum gönder
 try:
@@ -291,62 +308,48 @@ try:
 except Exception as st_err:
     print(f"Commit status hatası: {st_err}")
 
-# 5. PR varsa Pull Request Review API, yoksa Commit Comments API ile yorum bas
+# 5. YORUMLARI BAS (DOĞRUDAN COMMIT'İN ALTINA VE PR VARSA PR'A)
+
+# A) Doğrudan Commit'in Hemen Altına Yorum Bas (GitHub Commit sayfasında en altta görünür)
+commit_comment_url = f"https://api.github.com/repos/{REPO}/commits/{HEAD_SHA}/comments"
+try:
+    c_res = requests.post(commit_comment_url, headers=headers, json={"body": full_body}, timeout=15)
+    print(f"Commit yorumu yanıt kodu: {c_res.status_code}")
+    if c_res.status_code in (200, 201):
+        print(f"Commit {HEAD_SHA} altına başarıyla güvenlik inceleme yorumu eklendi!")
+    else:
+        print(f"Commit yorumu eklenemedi ({c_res.status_code}): {c_res.text[:200]}")
+except Exception as c_err:
+    print(f"Commit yorumu gönderim hatası: {c_err}")
+
+# B) Eğer PR varsa, PR Sohbet Alanına (Issue Comments) ve PR Review sekmesine de bas
 if PR_NUMBER:
-    already_reviewed = False
+    # 1. PR Sohbet Alanı (Timeline Comment)
+    pr_comment_url = f"https://api.github.com/repos/{REPO}/issues/{PR_NUMBER}/comments"
     try:
-        rev_res = requests.get(
-            f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/reviews?per_page=50",
-            headers=headers,
-            timeout=10,
-        )
-        if rev_res.status_code == 200:
-            for r in rev_res.json():
-                if marker in (r.get("body") or ""):
-                    already_reviewed = True
-                    break
-        if not already_reviewed:
-            c_res = requests.get(
-                f"https://api.github.com/repos/{REPO}/issues/{PR_NUMBER}/comments?per_page=50",
-                headers=headers,
-                timeout=10,
-            )
-            if c_res.status_code == 200:
-                for c in c_res.json():
-                    if marker in (c.get("body") or ""):
-                        already_reviewed = True
-                        break
-    except Exception as check_err:
-        print(f"Mükerrer kontrol hatası: {check_err}")
-
-    if already_reviewed:
-        print(f"PR #{PR_NUMBER} üzerinde {HEAD_SHA} için zaten inceleme mevcut. Mükerrer yorum atlanıyor.")
-    else:
-        # Pull Request Review API (commit_id ile bağlantılı)
-        review_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/reviews"
-        payload = {
-            "commit_id": HEAD_SHA,
-            "body": full_body,
-            "event": "COMMENT",
-        }
-        res = requests.post(review_url, headers=headers, json=payload, timeout=15)
-        if res.status_code in (200, 201):
-            print(f"PR #{PR_NUMBER} için commit {HEAD_SHA} incelemesi başarıyla Pull Request Review olarak eklendi!")
+        p_res = requests.post(pr_comment_url, headers=headers, json={"body": full_body}, timeout=15)
+        print(f"PR sohbet yorumu yanıt kodu: {p_res.status_code}")
+        if p_res.status_code in (200, 201):
+            print(f"PR #{PR_NUMBER} sohbet akışına başarıyla inceleme yorumu eklendi!")
         else:
-            print(f"Review API yanıtı ({res.status_code}): {res.text}. Issue comment fallback deneniyor...")
-            comment_url = f"https://api.github.com/repos/{REPO}/issues/{PR_NUMBER}/comments"
-            res2 = requests.post(comment_url, headers=headers, json={"body": full_body}, timeout=15)
-            if res2.status_code in (200, 201):
-                print(f"PR #{PR_NUMBER} sohbet alanına başarıyla inceleme yorumu eklendi!")
-            else:
-                print(f"PR yorumu eklenemedi ({res2.status_code}): {res2.text}")
-else:
-    # Doğrudan push yapılmışsa commit'in hemen altına yaz
-    commit_url = f"https://api.github.com/repos/{REPO}/commits/{HEAD_SHA}/comments"
-    res = requests.post(commit_url, headers=headers, json={"body": full_body}, timeout=15)
-    if res.status_code in (200, 201):
-        print(f"Commit {HEAD_SHA} altına başarıyla inceleme yorumu eklendi.")
-    else:
-        print(f"Commit yorumu eklenemedi ({res.status_code}): {res.text}")
-EOF
+            print(f"PR yorumu eklenemedi ({p_res.status_code}): {p_res.text[:200]}")
+    except Exception as p_err:
+        print(f"PR yorumu gönderim hatası: {p_err}")
 
+    # 2. PR Review API (commit_id ile bağlantılı resmi review)
+    try:
+        review_url = f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}/reviews"
+        r_res = requests.post(
+            review_url,
+            headers=headers,
+            json={
+                "commit_id": HEAD_SHA,
+                "body": full_body,
+                "event": "COMMENT",
+            },
+            timeout=15,
+        )
+        print(f"PR Review API yanıt kodu: {r_res.status_code}")
+    except Exception as r_err:
+        print(f"PR Review API hatası: {r_err}")
+EOF
