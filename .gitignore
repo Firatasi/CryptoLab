@@ -224,6 +224,20 @@ env.bak/
 
 venv.bak/
 
+# Sanal ortamlar
+.contracts-venv/
+**/venv/
+**/.venv/
+
+# .venv-serving gibi ek sanal ortamlar
+**/.venv-*/
+**/.venv_*/
+
+**/env/
+ENV/
+env.bak/
+venv.bak/
+
 
 
 # Python derleme ve cache
