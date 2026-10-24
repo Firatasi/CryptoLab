@@ -1,0 +1,11 @@
+# Eğitim süreçleri ortak API ve veri erişim araçlarını da kullanır.
+-r requirements-serving.in
+
+# Sayısal veri işlemleri
+numpy>=2,<3
+
+# İlk CPU modellerinin eğitimi
+scikit-learn>=1.5,<2
+
+# Yalnız eğitim hazırlığında PDF metni çıkarma
+pypdf>=5,<7
