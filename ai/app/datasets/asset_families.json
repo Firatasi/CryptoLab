@@ -1,0 +1,44 @@
+{
+  "policyVersion": "1.0.0",
+  "effectiveDate": "2026-10-22T00:00:00Z",
+  "policyName": "Asset Family Classification and Unseen Holdout Policy",
+  "rules": [
+    "Aynı token veya kripto varlığın farklı borsalardaki (örn. Binance, Coinbase, Bybit) spot ve vadeli kontratları aynı varlık ailesine eşlenir.",
+    "Sarılmış (wrapped) veya sentetik türevler (örn. WBTC, WETH, BTCB), dayanak varlığın ana ailesine bağlanır; bağımsız yeni aile oluşturamaz.",
+    "Likit staking ve yield token'ları (örn. stETH, rETH), dayanak varlık ailesi ile ilişkili kabul edilir ve train/validation'da sızıntıyı önlemek amacıyla aynı aileye dahil edilir.",
+    "Varlık aile eşleşmesi veri seti dondurma (freeze) anında statik olarak belirlenir; çalışma anında dinamik ticker metin eşleştirmesi veya serbest sembol ayrıştırması yasaktır.",
+    "Holdout (unseen) olarak belirlenen varlık ailesi, modelin genelleme kabiliyetini ölçmek amacıyla erken dönemlerde (train ve validation) kesinlikle kullanılamaz; sadece test aşamasında unseen_test olarak yer alır.",
+    "Yeni veya bilinmeyen bir enstrüman UUID'si doğrudan model için 'hazır' kabul edilmez; aile ataması ve veri kapsamı (coverage) kontrolü zorunludur."
+  ],
+  "seenFamilies": [
+    "BTC_FAMILY",
+    "ETH_FAMILY",
+    "SOL_FAMILY"
+  ],
+  "unseenFamilies": [
+    "HOLDOUT_DEF_FAMILY"
+  ],
+  "familyDefinitions": {
+    "BTC_FAMILY": {
+      "baseAsset": "BTC",
+      "derivativesIncluded": ["WBTC", "BTCB", "tBTC"],
+      "description": "Bitcoin ana ve sarılmış türevleri"
+    },
+    "ETH_FAMILY": {
+      "baseAsset": "ETH",
+      "derivativesIncluded": ["WETH", "stETH", "rETH"],
+      "description": "Ethereum ve likit staking türevleri"
+    },
+    "SOL_FAMILY": {
+      "baseAsset": "SOL",
+      "derivativesIncluded": ["mSOL", "bSOL"],
+      "description": "Solana ekosistemi ana varlıkları"
+    },
+    "HOLDOUT_DEF_FAMILY": {
+      "baseAsset": "DEF",
+      "derivativesIncluded": [],
+      "description": "Eğitim ve validasyona asla sokulmayan, unseen test değerlendirmesi için ayrılmış bağımsız aile"
+    }
+  }
+}
+

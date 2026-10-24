@@ -1,0 +1,50 @@
+{
+  "splitManifestId": "11111111-2222-4333-8444-555555555555",
+  "datasetId": "55555555-5555-4555-8555-555555555555",
+  "datasetHash": "sha256:d41d8cd98f00b204e9800998ecf8427eefc4cf33dc5e1a1b5b47a98eb3ffb9a1",
+  "schemaVersion": "1.0.0",
+  "featureVersion": "features-v1",
+  "labelVersion": "forward-log-return-v1",
+  "seed": 42,
+  "codeCommit": "87109d3",
+  "boundaries": {
+    "trainStart": "2026-01-01T00:00:00Z",
+    "validationStart": "2026-06-01T00:00:00Z",
+    "testStart": "2026-09-01T00:00:00Z",
+    "testEnd": "2026-10-23T00:00:00Z"
+  },
+  "purgePolicy": {
+    "rule": "label_end < next_boundary",
+    "maxHorizonSeconds": 604800,
+    "description": "Etiket penceresi (decision_time + horizon) bir sonraki fold sınırını aşan veya sınıra değen tüm satırlar sızıntıyı önlemek amacıyla eğitim ve validasyondan çıkarılır."
+  },
+  "familySets": {
+    "seenFamilies": [
+      "BTC_FAMILY",
+      "ETH_FAMILY",
+      "SOL_FAMILY"
+    ],
+    "unseenFamilies": [
+      "HOLDOUT_DEF_FAMILY"
+    ]
+  },
+  "supportedHorizons": [
+    60,
+    900,
+    3600,
+    86400,
+    604800
+  ],
+  "foldCounts": {
+    "train": 12500,
+    "validation": 3200,
+    "seen_test": 2100,
+    "unseen_test": 950,
+    "purged": 480
+  },
+  "survivorshipBiasNotice": {
+    "hasSurvivorshipBias": true,
+    "details": "Veri kümesi yalnızca snapshot tarihinde aktif olan ve kesintisiz geçmişe sahip enstrümanları içerir. Geçmişte işlem hacmi sıfırlanan, delist edilen veya çöken varlıklar veride yer almadığından hayatta kalma yanlılığı (survivorship bias) bulunmaktadır. Canlı ortam risk analizlerinde bu kısıt dikkate alınmalıdır."
+  }
+}
+
