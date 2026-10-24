@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Piyasa anlık görüntüsü. Fiyat ve miktarlar Decimal string olarak taşınır; UUID ve tarih format kontrolleri etkin olmalıdır.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "instrumentId",
+    "snapshotId",
+    "markPrice",
+    "lastPrice",
+    "bidPrice",
+    "askPrice",
+    "bidQty",
+    "askQty",
+    "sourceTime",
+    "receivedAt",
+    "quality",
+    "reasonCodes"
+  ],
+  "properties": {
+    "instrumentId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "snapshotId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "markPrice": {
+      "type": "string",
+      "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "lastPrice": {
+      "$comment": "Alan bulunmak zorundadır; son işlem fiyatı bilinmiyorsa null olabilir.",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "bidPrice": {
+      "type": "string",
+      "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "askPrice": {
+      "type": "string",
+      "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "bidQty": {
+      "type": "string",
+      "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "askQty": {
+      "type": "string",
+      "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "sourceTime": {
+      "$comment": "Verinin kaynağındaki zaman.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "receivedAt": {
+      "$comment": "Verinin bizim sistemimize ulaştığı zaman.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "quality": {
+      "$comment": "Yalnızca sözleşmede tanımlanan kalite değerleri kabul edilir.",
+      "enum": [
+        "WARMING",
+        "FRESH",
+        "STALE",
+        "GAP",
+        "UNAVAILABLE"
+      ]
+    },
+    "reasonCodes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

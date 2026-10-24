@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+		 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+		 xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+	<modelVersion>4.0.0</modelVersion>
+
+	<!-- Mevcut ana projemizin Java ve sürüm ayarlarını devralır.
+         Parent kullanmak tek başına Spring kütüphanelerini eklemez. -->
+	<parent>
+		<groupId>com.crypto</groupId>
+		<artifactId>backend</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+		<relativePath>../pom.xml</relativePath>
+	</parent>
+
+	<artifactId>finance-core</artifactId>
+	<name>CryptoLab Finance Core</name>
+
+	<!-- Diğer modüllerin kullanabileceği normal bir Java kütüphanesi.
+         Çalıştırılabilir Spring Boot uygulaması değildir. -->
+	<packaging>jar</packaging>
+
+	<dependencies>
+		<!-- Finans hesaplarını test etmek için kullanılacak.
+             test kapsamı sayesinde uygulamanın çalışma bağımlılığı olmaz.
+             Sürüm, parent üzerinden yönetilir. -->
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+</project>

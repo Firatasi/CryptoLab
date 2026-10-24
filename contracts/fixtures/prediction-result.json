@@ -1,0 +1,18 @@
+{
+  "requestId": "22222222-2222-4222-8222-222222222222",
+  "quality": "INSUFFICIENT_DATA",
+  "reasonCodes": [
+    "INSUFFICIENT_HISTORY"
+  ],
+  "modelBundleId": "44444444-4444-4444-8444-444444444444",
+  "featureVersion": "features-v1",
+  "featureSchemaHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "featureSnapshotId": "66666666-6666-4666-8666-666666666666",
+  "asOf": "2026-10-12T15:00:00.000Z",
+  "horizonSeconds": 3600,
+  "predictedLogReturn": null,
+  "volatilityEstimate": null,
+  "calibrationVersion": null,
+  "observedFeatureSummary": {},
+  "latencyMs": 1
+}

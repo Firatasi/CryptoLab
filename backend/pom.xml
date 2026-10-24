@@ -32,6 +32,8 @@
         <module>strategy-service</module>
         <module>reporting-service</module>
         <module>account-service</module>
+        <module>finance-core</module>
+        <module>test-support</module>
     </modules>
 
     <!-- Modüllerin devralacağı ortak ayarlar -->
@@ -53,5 +55,34 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <!-- Parent build/plugins altına ekle; pluginManagement tek başına çalıştırmaz. -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.4</version>
+                <configuration>
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.5.4</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 
 </project>

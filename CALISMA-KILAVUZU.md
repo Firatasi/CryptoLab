@@ -117,3 +117,21 @@ Her paket rehberinin başlangıcındaki mentor mesajını ilgili sohbete yapış
 Dört mevcut şartname içerik değişmeden korunur. Üç paket görev rehberi ve bu koordinasyon kılavuzu eklenir. Görev referansları ve yeni rehber bağlantıları kontrol edilir; uygulama derleme/test/eğitim yapılmaz. Başlangıçta bütün görevler tamamlanmamıştır.
 
 Kontrol kaydı: 32 ana görev ve 223 işaretlenmemiş alt görev; yeni rehberlerde 13 yerel bağlantı ve görev numaraları doğrulandı. Yüklenen dört şartnamenin içerik hash’leri korunuyor. Bu kontrol doküman düzenine aittir; uygulama testleri çalıştırılmadı.
+
+
+| Klasör | Ne için kullanılacak? |
+|---|---|
+| `backend` | Java servisleri ve yardımcı Maven modülleri |
+| `frontend` | İleride kullanıcı arayüzü |
+| `ai` | İleride Python AI uygulaması |
+| `contracts` | Servislerin alışveriş yaptığı JSON verilerinin kuralları ve örnekleri |
+| `infra` | İleride Docker ve altyapı yapılandırmaları |
+| `progress` | Tamamlanan işler ve doğrulama sonuçları |
+
+
+| Katman | Görevi | Buraya koymayacağımız işler |
+|---|---|---|
+| `api` | HTTP isteğini alır, giriş biçimini doğrular, cevabı döner. | SQL ve kâr/zarar hesabı |
+| `application` | Bir kullanım senaryosunun adımlarını ve transaction sınırını yönetir. | Doğrudan SQL veya dış servis JSON’unu çözümleme |
+| `domain` | İş kurallarını, modellerini ve kararlarını içerir. | Spring, HTTP, veritabanı erişimi |
+| `infrastructure` | Veritabanı, Kafka, Redis ve dış HTTP bağlantılarını uygular. | Finansal iş kararlarının sahipliği |

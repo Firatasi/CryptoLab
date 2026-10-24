@@ -1,0 +1,45 @@
+name: "Gemini Review"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - "**"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  statuses: write
+
+jobs:
+  gemini-review:
+    name: "Gemini Review"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repo Kodunu Çek
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Python Kurulumu
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Gerekli Paketleri Yükle
+        run: pip install google-genai requests
+
+      - name: Gemini Security Review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+        run: python3 .github/scripts/gemini_review.py
