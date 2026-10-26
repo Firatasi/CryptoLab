@@ -314,10 +314,10 @@ def test_numeric_model_parity_with_sklearn():
     with pytest.raises(ValueError, match="FEATURE_ORDER_MISMATCH"):
         model.predict(val[0].x, feature_names=list(reversed(NAMES)))
 
-    with pytest.raises(ValueError, match="HORIZON_MISMATCH"):
+    with pytest.raises(ValueError, match="UNSUPPORTED_HORIZON"):
         model.predict(val[0].x, horizon_seconds=60)
 
-    with pytest.raises(ValueError, match="NON_FINITE_INPUT"):
+    with pytest.raises(ValueError, match="INVALID_FEATURES"):
         model.predict((float("nan"), 1.0, 2.0, 3.0))
 
 

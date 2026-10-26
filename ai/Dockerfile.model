@@ -1,0 +1,26 @@
+# CryptoLab Model Serving Dockerfile (Inference Runtime)
+FROM python:3.12-slim
+
+WORKDIR /service
+
+COPY requirements-serving.lock.txt ./
+RUN pip install --no-cache-dir -r requirements-serving.lock.txt
+
+RUN useradd --uid 10001 --create-home appuser
+
+# Serving katmanı: sources, training veya ağır ML framework'leri içermez
+COPY app/contracts ./app/contracts
+COPY app/features ./app/features
+COPY app/inference ./app/inference
+COPY app/explanations ./app/explanations
+COPY app/registry ./app/registry
+COPY app/infrastructure ./app/infrastructure
+COPY app/api/model_api.py ./app/api/model_api.py
+COPY app/__init__.py app/main.py ./app/
+
+USER appuser
+
+EXPOSE 8091
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8091"]
+

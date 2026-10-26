@@ -1,0 +1,32 @@
+{
+  "exampleId": "GOLDEN-WAIT-001",
+  "task": "ABSTENTION",
+  "input": {
+    "verifiedFeatures": {
+      "return_1": 0.0002,
+      "return_5": 0.0011,
+      "realized_volatility_20": 0.015,
+      "atr_ratio_14": 1.12
+    },
+    "policyOutcome": {
+      "action": "WAIT",
+      "policyReason": "SIGNAL_THRESHOLD_NOT_MET"
+    },
+    "language": "tr"
+  },
+  "target": {
+    "explanation": "Piyasa getiri ve oynaklık metrikleri pozitif yönde olsa da sinyal eşiği karşılanmamıştır. Risk politikası uyarınca bekleme (WAIT) kararı korunmaktadır.",
+    "reasonCodes": ["SIGNAL_THRESHOLD_NOT_MET", "RISK_GATE_HOLD"]
+  },
+  "reviewStatus": "ACCEPTED",
+  "reviewerId": "senior-quant-reviewer-01",
+  "sourceSpans": [
+    {
+      "sourceId": "S04_QUANT_RISK",
+      "page": 14,
+      "topic": "Volatility gating and threshold filtering"
+    }
+  ],
+  "splitGroup": "core-risk-rules"
+}
+

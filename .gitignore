@@ -296,6 +296,9 @@ htmlcov/
 
 *.safetensors
 
+weights/
+ai/weights/
+
 
 
 # FastAPI / Celery calisma dosyalari

@@ -1,3 +1,4 @@
+"""A01/A05: App factory, bağımlılıkları dışarıdan alır. Training paketi import edilmez."""
 from datetime import datetime, timezone
 from secrets import compare_digest
 from uuid import UUID
@@ -9,9 +10,12 @@ from fastapi.responses import JSONResponse
 from app.contracts.error import ErrorResponse
 from app.contracts.model import (
     ActiveModelBundle,
+    ExplanationRequest,
+    ExplanationResult,
     PredictionRequest,
     PredictionResult,
 )
+from app.explanations.template import explain_template
 from app.infrastructure.ports import PredictionService, Registry
 
 
@@ -20,11 +24,9 @@ def create_app(
     registry: Registry,
     secret: str,
 ) -> FastAPI:
-    # Secret kaynak koda yazilmaz; uygulama kurulurken disaridan verilir.
     if not secret or len(secret) < 32:
         raise ValueError("SERVICE_SECRET_REQUIRED")
 
-    # App factory: testte ve gercek calismada farkli adapter baglayabiliriz.
     app = FastAPI(
         title="CryptoLab model-api",
         docs_url=None,
@@ -34,28 +36,20 @@ def create_app(
 
     def internal_auth(request: Request) -> None:
         received_secret = request.headers.get("X-Service-Secret", "")
-
-        # Sabit zamanli karsilastirma ile servis kimligini kontrol eder.
-        if not compare_digest(
-            received_secret.encode("utf-8"),
-            secret.encode("utf-8"),
-        ):
+        if not compare_digest(received_secret.encode("utf-8"), secret.encode("utf-8")):
             raise HTTPException(401, "UNAUTHORIZED")
 
-        # Header kimligi HTTP cagrisini, body.requestId analiz istegini izler.
         try:
             trace_id = UUID(request.headers.get("X-Request-Id", ""))
-        except ValueError:
+        except (ValueError, TypeError):
             raise HTTPException(400, "INVALID_REQUEST_ID")
 
         request.state.trace_id = str(trace_id)
 
-        # Suresi gecmis istekleri calistirmadan reddeder.
         try:
-            deadline = datetime.fromisoformat(
-                request.headers.get("X-Deadline", "").replace("Z", "+00:00")
-            )
-        except ValueError:
+            deadline_str = request.headers.get("X-Deadline", "")
+            deadline = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
             raise HTTPException(400, "INVALID_DEADLINE")
 
         if deadline.tzinfo is None:
@@ -70,10 +64,13 @@ def create_app(
         code: str,
         message: str,
     ) -> JSONResponse:
+        trace_id = getattr(request.state, "trace_id", None) or request.headers.get(
+            "X-Request-Id", "unknown"
+        )
         body = ErrorResponse(
             code=code,
-            message=message,
-            traceId=getattr(request.state, "trace_id", "unknown"),
+            message=message or code,
+            traceId=str(trace_id),
             retryable=status == 503,
             details={},
         )
@@ -87,10 +84,8 @@ def create_app(
         request: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
-        # Hatali body veya secret degerlerini cevaba koymayiz.
         return error_response(
-            request, 400, "INVALID_REQUEST",
-            "Istek alanlari gecersiz.",
+            request, 400, "INVALID_REQUEST", "Istek alanlari gecersiz."
         )
 
     @app.exception_handler(HTTPException)
@@ -99,33 +94,34 @@ def create_app(
         exc: HTTPException,
     ) -> JSONResponse:
         return error_response(
-            request, exc.status_code, str(exc.detail),
-            "Istek kabul edilmedi.",
+            request, exc.status_code, str(exc.detail), "Istek kabul edilmedi."
         )
 
     @app.exception_handler(ValueError)
-    async def model_error(
+    async def domain_error(
         request: Request,
         exc: ValueError,
     ) -> JSONResponse:
         code = str(exc)
-
-        # Yalniz bildigimiz guvenli hata kodlarini disariya aktaririz.
-        if code in {"FEATURE_SCHEMA_MISMATCH", "UNSUPPORTED_HORIZON"}:
+        safe_domain_errors = {
+            "FEATURE_SCHEMA_MISMATCH",
+            "UNSUPPORTED_HORIZON",
+            "INVALID_POLICY_OUTCOME",
+            "POLICY_CONTRADICTION",
+            "INVALID_REASON_CODES",
+        }
+        if code in safe_domain_errors:
             return error_response(
-                request, 422, code,
-                "Istek model sozlesmesiyle uyusmuyor.",
+                request, 422, code, "Istek model sozlesmesiyle uyusmuyor."
             )
 
         if code == "MODEL_NOT_READY":
             return error_response(
-                request, 503, code,
-                "Kullanilabilir model henuz hazir degil.",
+                request, 503, code, "Kullanilabilir model henuz hazir degil."
             )
 
         return error_response(
-            request, 503, "MODEL_UNAVAILABLE",
-            "Tahmin islemi tamamlanamadi.",
+            request, 503, "MODEL_UNAVAILABLE", "Tahmin islemi tamamlanamadi."
         )
 
     @app.exception_handler(Exception)
@@ -133,11 +129,17 @@ def create_app(
         request: Request,
         exc: Exception,
     ) -> JSONResponse:
-        # Ham exception mesaji veya stack trace istemciye verilmez.
         return error_response(
-            request, 503, "MODEL_UNAVAILABLE",
-            "Tahmin islemi tamamlanamadi.",
+            request, 503, "MODEL_UNAVAILABLE", "Tahmin islemi tamamlanamadi."
         )
+
+    @app.post(
+        "/internal/model/predictions",
+        response_model=PredictionResult,
+        dependencies=[Depends(internal_auth)],
+    )
+    def predictions(body: PredictionRequest) -> PredictionResult:
+        return service.predict(body)
 
     @app.get(
         "/internal/model/active-bundle",
@@ -147,16 +149,16 @@ def create_app(
     def active_bundle(horizonSeconds: int) -> ActiveModelBundle:
         if horizonSeconds not in (60, 900, 3600, 86400, 604800):
             raise HTTPException(422, "UNSUPPORTED_HORIZON")
-
         return registry.active(horizonSeconds)
 
     @app.post(
-        "/internal/model/predictions",
-        response_model=PredictionResult,
+        "/internal/model/explanations",
+        response_model=ExplanationResult,
         dependencies=[Depends(internal_auth)],
     )
-    def predictions(body: PredictionRequest) -> PredictionResult:
-        # HTTP katmani model egitmez; baglanan servisi cagirir.
-        return service.predict(body)
+    def explanations(body: ExplanationRequest) -> ExplanationResult:
+        # Bundle varlığı kontrol edilir
+        registry.get(body.modelBundleId)
+        return explain_template(body)
 
     return app
