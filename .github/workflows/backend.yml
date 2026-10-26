@@ -1,5 +1,16 @@
 name: backend
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'backend/**'
+      - 'contracts/**'
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'contracts/**'
 jobs:
   verify:
     runs-on: ubuntu-latest
