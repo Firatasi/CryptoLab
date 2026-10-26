@@ -268,6 +268,30 @@ class TestPromptInjectionAndModelHandling(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["summary"]["status"], "GREEN")
 
+    def test_dynamic_model_discovery(self):
+        """API üzerinden ListModels çağrıldığında generateContent destekleyen Flash modelleri filtrelenir."""
+        reviewer = GeminiReviewer(api_key="test-key", config=ConfigManager())
+        mock_models_json = {
+            "models": [
+                {"name": "models/gemini-2.0-flash", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-2.0-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/text-embedding-004", "supportedGenerationMethods": ["embedContent"]},
+                {"name": "models/gemini-1.5-pro", "supportedGenerationMethods": ["generateContent"]},
+            ]
+        }
+        with patch("gemini_review.urlopen") as mock_url:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(mock_models_json).encode("utf-8")
+            mock_resp.__enter__.return_value = mock_resp
+            mock_url.return_value = mock_resp
+
+            # REST discovery metodunu test et (genai SDK None durumunda)
+            with patch("gemini_review.genai", None):
+                discovered = reviewer.discover_models()
+                self.assertIn("gemini-2.0-flash", discovered)
+                self.assertIn("gemini-2.0-flash-lite", discovered)
+                self.assertNotIn("text-embedding-004", discovered)
+
 
 class TestReviewOrchestrator(unittest.TestCase):
     """Uçtan uca mock orkestrasyon ve fork PR davranışı."""

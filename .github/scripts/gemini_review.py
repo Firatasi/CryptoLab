@@ -570,13 +570,83 @@ class GeminiReviewer:
     def __init__(self, api_key: str, config: ConfigManager):
         self.api_key = api_key
         self.config = config
-        configured_models = [
-            config.config["models"].get("primary", "gemini-2.5-flash"),
-            config.config["models"].get("fallback", "gemini-2.0-flash"),
+        
+        configured_primary = config.config.get("models", {}).get("primary", "gemini-2.0-flash")
+        configured_fallback = config.config.get("models", {}).get("fallback", "gemini-1.5-flash-latest")
+        
+        # Tamamen ücretsiz (Free Tier - 0$) Flash model zinciri
+        default_chain = [
+            configured_primary,
+            configured_fallback,
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-flash-002",
+            "gemini-1.5-flash-001",
             "gemini-1.5-flash",
+            "gemini-2.0-flash-exp",
+            "gemini-1.5-pro-latest",
+            "gemini-1.5-pro",
         ]
+        
+        # API anahtarına tanımlı yetkili modelleri dinamik keşfet (ListModels)
+        discovered = self.discover_models()
+        if discovered:
+            # Öncelikli yapılandırılan model destekleniyorsa başa al, ardından diğer Flash modeller
+            preferred = [m for m in [configured_primary, configured_fallback] if m in discovered]
+            final_models = preferred + [m for m in discovered if m not in preferred]
+        else:
+            final_models = default_chain
+
         seen = set()
-        self.models = [m for m in configured_models if not (m in seen or seen.add(m))]
+        self.models = [m for m in final_models if not (m in seen or seen.add(m))]
+        print(f"Aktif Gemini Modelleri Öncelik Sırası: {self.models}")
+
+    def discover_models(self) -> List[str]:
+        """Kullanıcının API anahtarıyla erişebildiği, generateContent destekleyen Flash modellerini tespit eder."""
+        if not self.api_key:
+            return []
+        
+        discovered: List[str] = []
+
+        # 1. Google GenAI SDK Yolu
+        if genai is not None:
+            try:
+                client = genai.Client(api_key=self.api_key)
+                for m in client.models.list():
+                    name = getattr(m, "name", "")
+                    clean = name[7:] if name.startswith("models/") else name
+                    actions = getattr(m, "supported_actions", None) or getattr(m, "supported_generation_methods", [])
+                    if not actions or "generateContent" in actions or "generate_content" in actions:
+                        if "flash" in clean.lower():
+                            discovered.append(clean)
+                if discovered:
+                    print(f"GenAI SDK üzerinden {len(discovered)} adet Flash model keşfedildi: {discovered}")
+                    return discovered
+            except Exception as e:
+                print(f"Model keşfi SDK uyarısı: {e}")
+
+        # 2. REST API Yolu (v1beta ve v1)
+        for api_ver in ("v1beta", "v1"):
+            try:
+                url = f"https://generativelanguage.googleapis.com/{api_ver}/models?key={self.api_key}"
+                req = Request(url, headers={"Content-Type": "application/json"})
+                with urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    for item in data.get("models", []):
+                        methods = item.get("supportedGenerationMethods", [])
+                        if not methods or "generateContent" in methods:
+                            m_name = item.get("name", "")
+                            clean = m_name[7:] if m_name.startswith("models/") else m_name
+                            if "flash" in clean.lower() and clean not in discovered:
+                                discovered.append(clean)
+                if discovered:
+                    print(f"REST ({api_ver}) üzerinden {len(discovered)} adet Flash model keşfedildi: {discovered}")
+                    return discovered
+            except Exception:
+                pass
+
+        return discovered
 
     def build_system_prompt(self, repo_name: str, projects: Dict[str, ProjectInfo]) -> str:
         project_desc_lines = []
@@ -684,22 +754,26 @@ Yanıtını YALNIZCA aşağıdaki JSON şemasına birebir uygun üret:
             return None, "Gemini API ücretsiz kota sınırı (15 RPM / 1.500 RPD) aşıldı (HTTP 429)."
         elif any(x in last_error.lower() for x in ("500", "503", "overloaded")):
             return None, "Gemini sunucu yoğunluğu (Geçici hata, HTTP 500/503)."
+        elif "404" in last_error:
+            return None, f"Gemini modeli bulunamadı (HTTP 404): {last_error[:120]}"
         else:
             return None, f"Gemini API hatası: {last_error[:120]}"
 
     def _call_model(self, model_name: str, system_prompt: str, user_content: str) -> Optional[str]:
-        """Önce SDK'yı dener, yoksa REST API fallback kullanır."""
+        """Önce SDK'yı dener, yoksa REST API (v1beta ve v1) fallback kullanır."""
+        clean_model = model_name[7:] if model_name.startswith("models/") else model_name
+
         # 1. Google GenAI SDK Yolu
         if genai is not None:
             try:
                 client = genai.Client(api_key=self.api_key)
                 cfg = types.GenerateContentConfig(
                     system_instruction=system_prompt,
-                    temperature=self.config.config["models"].get("temperature", 0.1),
+                    temperature=self.config.config.get("models", {}).get("temperature", 0.1),
                     response_mime_type="application/json",
                 )
                 resp = client.models.generate_content(
-                    model=model_name,
+                    model=clean_model,
                     contents=user_content,
                     config=cfg,
                 )
@@ -707,10 +781,9 @@ Yanıtını YALNIZCA aşağıdaki JSON şemasına birebir uygun üret:
                     return resp.text.strip()
             except Exception as e:
                 # SDK başarısız olursa HTTP fallback'e devam et
-                print(f"[{model_name}] SDK hatası, REST API fallback deneniyor: {e}")
+                print(f"[{clean_model}] SDK hatası, REST API fallback deneniyor: {e}")
 
-        # 2. Doğrudan REST API Fallback Yolu (Resmi Google Generative Language v1beta REST spesifikasyonu)
-        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
+        # 2. Doğrudan REST API Fallback Yolu (Hem v1beta hem v1 denenir)
         payload = {
             "systemInstruction": {
                 "parts": [{"text": system_prompt}]
@@ -719,34 +792,46 @@ Yanıtını YALNIZCA aşağıdaki JSON şemasına birebir uygun üret:
                 {"parts": [{"text": user_content}]}
             ],
             "generationConfig": {
-                "temperature": self.config.config["models"].get("temperature", 0.1),
+                "temperature": self.config.config.get("models", {}).get("temperature", 0.1),
                 "responseMimeType": "application/json"
             }
         }
+        encoded_data = json.dumps(payload).encode("utf-8")
 
-        req = Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        last_rest_err = None
+        for api_version in ("v1beta", "v1"):
+            endpoint = f"https://generativelanguage.googleapis.com/{api_version}/models/{clean_model}:generateContent?key={self.api_key}"
+            req = Request(
+                endpoint,
+                data=encoded_data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urlopen(req, timeout=self.config.config.get("limits", {}).get("request_timeout_seconds", 45)) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            return parts[0].get("text", "").strip()
+            except HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+                print(f"[{clean_model}] REST {api_version} HTTP {e.code}: {err_body[:200]}")
+                last_rest_err = Exception(f"HTTP {e.code}: {err_body[:200]}")
+                # Eğer 404 ise bir sonraki api_version'a geç
+                if e.code == 404 and api_version != "v1":
+                    continue
+                raise last_rest_err
+            except Exception as e:
+                print(f"[{clean_model}] REST {api_version} Bağlantı Hatası: {e}")
+                last_rest_err = e
+                if api_version != "v1":
+                    continue
+                raise
 
-        try:
-            with urlopen(req, timeout=self.config.config["limits"].get("request_timeout_seconds", 45)) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts:
-                        return parts[0].get("text", "").strip()
-        except HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
-            print(f"[{model_name}] REST API HTTP {e.code} Hatası: {err_body[:300]}")
-            raise Exception(f"HTTP {e.code}: {err_body[:200]}")
-        except Exception as e:
-            print(f"[{model_name}] REST API Bağlantı Hatası: {e}")
-            raise
-
+        if last_rest_err:
+            raise last_rest_err
         return None
 
     def _parse_and_validate_json(self, raw_str: str) -> Optional[Dict[str, Any]]:

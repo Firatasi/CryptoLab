@@ -7,13 +7,12 @@ version: "1.0"
 repository_name: "fullstack-excercises"
 
 # AI Model Ayarları
-# Google AI Studio Free Tier kapsamında:
-# - gemini-2.5-flash: En güncel hibrit akıl yürütme ve yüksek bağlamlı Flash modeli (Varsayılan)
-# - gemini-2.0-flash: Yüksek hızlı kararlı ikincil model
-# - gemini-1.5-flash: Dayanıklı fallback modeli
+# Google AI Studio Free Tier (100% Ücretsiz Katman - Kredi kartı veya ücret gerektirmez):
+# - gemini-2.0-flash: En güncel, yüksek hızlı ve yetenekli Flash modeli (Varsayılan)
+# - gemini-1.5-flash-latest: Kararlı ikincil yedek Flash modeli
 models:
-  primary: "gemini-2.5-flash"
-  fallback: "gemini-2.0-flash"
+  primary: "gemini-2.0-flash"
+  fallback: "gemini-1.5-flash-latest"
   temperature: 0.1
 
 # İnceleme Davranışı
