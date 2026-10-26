@@ -581,3 +581,215 @@ def test_cache_key_has_no_request_id():
     second = request(as_of_after(21))
     assert first.requestId != second.requestId
     assert str(first.requestId) not in key
+
+
+# --------------------------------------------------------------- A10 E2E Core Checks
+from datetime import datetime, timezone
+from pydantic import ValidationError
+from app.contracts.model import PredictionResult
+from app.datasets.splits import Sample, split_panel, forward_label
+from app.training.numeric import fit_numeric, export_numeric
+from app.inference.numeric import NumericModel
+from app.infrastructure.artifacts import ArtifactStore
+from app.datasets.review import freeze_examples
+from app.sources.url_policy import validate_target
+from app.evaluation.gates import publish_gate
+
+T_E2E = datetime(2026, 1, 1, tzinfo=timezone.utc)
+I_E2E = uuid4()
+
+def e2e_request():
+    return dict(
+        requestId=str(uuid4()),
+        instrumentId=str(I_E2E),
+        horizonSeconds=3600,
+        asOf=T_E2E.isoformat(),
+        modelBundleId=str(uuid4()),
+        marketDatasetId=str(uuid4()),
+        marketSnapshotId=str(uuid4()),
+        featureVersion="features-v1",
+    )
+
+def e2e_candles():
+    return [
+        Candle(
+            I_E2E,
+            T_E2E + timedelta(minutes=k),
+            T_E2E + timedelta(minutes=k),
+            Decimal(100 + k),
+            Decimal(102 + k),
+            Decimal(99 + k),
+            Decimal(101 + k),
+        )
+        for k in range(21)
+    ]
+
+def e2e_result():
+    r = e2e_request()
+    return dict(
+        requestId=r["requestId"],
+        quality="READY",
+        reasonCodes=[],
+        modelBundleId=r["modelBundleId"],
+        featureVersion="features-v1",
+        featureSchemaHash=SCHEMA_HASH,
+        featureSnapshotId=str(uuid4()),
+        asOf=r["asOf"],
+        horizonSeconds=3600,
+        predictedLogReturn=0.01,
+        volatilityEstimate=0.02,
+        calibrationVersion=None,
+        observedFeatureSummary={},
+        latencyMs=1,
+    )
+
+def test_contract_roundtrip():
+    p = PredictionRequest(**e2e_request())
+    assert PredictionRequest.model_validate_json(p.model_dump_json()) == p
+
+@pytest.mark.parametrize("changes", [
+    {"pdf": "x"},
+    {"horizonSeconds": 300},
+    {"asOf": "2026-01-01T00:00:00"},
+    {"asOf": "2026-01-01T00:00:00+03:00"},
+    {"requestId": "bad"},
+])
+def test_invalid_request(changes):
+    with pytest.raises(ValidationError):
+        PredictionRequest(**(e2e_request() | changes))
+
+@pytest.mark.parametrize("changes", [
+    {"quality": "STALE_DATA"},
+    {"predictedLogReturn": float("nan")},
+    {"volatilityEstimate": -0.1},
+    {"predictedLogReturn": None},
+])
+def test_invalid_result(changes):
+    with pytest.raises(ValidationError):
+        PredictionResult(**(e2e_result() | changes))
+
+def test_no_future_or_unavailable_bar():
+    rows = e2e_candles()
+    asof = rows[-1].close_time
+    a = build_features(rows, I_E2E, asof, "sha256:fixture")
+    future = Candle(
+        I_E2E,
+        asof + timedelta(minutes=1),
+        asof + timedelta(minutes=1),
+        Decimal(1),
+        Decimal(999),
+        Decimal(1),
+        Decimal(999),
+    )
+    b = build_features(rows + [future], I_E2E, asof, "sha256:fixture")
+    assert a == b and a.quality == "READY"
+    delayed = rows[:-1] + [
+        Candle(
+            I_E2E,
+            asof,
+            asof + timedelta(seconds=1),
+            Decimal(120),
+            Decimal(122),
+            Decimal(119),
+            Decimal(121),
+        )
+    ]
+    assert build_features(delayed, I_E2E, asof, "x").quality == "INSUFFICIENT_DATA"
+
+def test_gap_and_stale_e2e():
+    rows = e2e_candles()
+    assert build_features(rows, I_E2E, rows[-1].close_time + timedelta(minutes=5), "x").quality == "STALE_DATA"
+    assert build_features(rows[:-1], I_E2E, rows[-1].close_time, "x").quality == "INSUFFICIENT_DATA"
+
+def test_decimal_atr():
+    f = build_features(e2e_candles(), I_E2E, T_E2E + timedelta(minutes=20), "x")
+    assert isinstance(f.summary["atrPrice"], str) and Decimal(f.summary["atrPrice"]) == Decimal(3)
+
+def test_split_purges_boundary_and_unseen():
+    rows = [
+        Sample("seen", T_E2E, T_E2E + timedelta(days=8), (0.0,), 0.0),
+        Sample("unseen", T_E2E, T_E2E + timedelta(days=1), (0.0,), 0.0),
+        Sample("unseen", T_E2E + timedelta(days=21), T_E2E + timedelta(days=22), (0.0,), 0.0),
+    ]
+    s = split_panel(rows, T_E2E + timedelta(days=7), T_E2E + timedelta(days=20), T_E2E + timedelta(days=30), {"unseen"})
+    assert not s["train"] and len(s["purged"]) == 1 and len(s["unseen_test"]) == 1
+
+def test_missing_label_is_not_zero():
+    assert forward_label({T_E2E: Decimal(100)}, T_E2E, 60) is None
+
+def test_real_fit_export_load(tmp_path):
+    train = [
+        Sample("A", T_E2E, T_E2E + timedelta(hours=1), tuple(math.sin(i + j) for j in range(len(NAMES))), math.sin(i) * 0.01)
+        for i in range(30)
+    ]
+    validation = train[5:10]
+    artifact, metrics = fit_numeric(train, validation, 3600)
+    path = tmp_path / "model.json"
+    h = export_numeric(artifact, path)
+    model = NumericModel(path.read_bytes(), h)
+    v = train[8].x
+    pred = model.predict(v, 3600)
+    expected = artifact["intercept"] + sum(
+        c * (x - m) / s
+        for c, x, m, s in zip(artifact["coef"], v, artifact["mean"], artifact["scale"])
+    )
+    assert pred[0] == pytest.approx(expected) and metrics["trainRows"] == 30
+
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.linear_model import Ridge
+
+    pipe = Pipeline([("scale", StandardScaler()), ("model", Ridge(alpha=1.0))]).fit(
+        [r.x for r in train], [r.y for r in train]
+    )
+    assert pred[0] == pytest.approx(float(pipe.predict([v])[0]), abs=1e-12)
+    with pytest.raises(ValueError):
+        NumericModel(path.read_bytes() + b" ", h)
+    assert model.predict(tuple(10000.0 for _ in NAMES), 3600) is None
+
+def test_artifact_path_and_hash(tmp_path):
+    store = ArtifactStore(tmp_path)
+    h = store.put(b"abc")
+    assert store.read(h) == b"abc"
+    with pytest.raises(ValueError):
+        store.read("../secret")
+    (tmp_path / h[7:]).write_bytes(b"bad")
+    with pytest.raises(ValueError):
+        store.read(h)
+
+def e2e_example(family, ex_id):
+    return {
+        "exampleId": ex_id,
+        "task": "ABSTENTION",
+        "input": {
+            "verifiedFeatures": {},
+            "policyOutcome": {"action": "WAIT"},
+            "language": "tr",
+        },
+        "target": {"explanation": "Veri yok.", "reasonCodes": []},
+        "reviewStatus": "ACCEPTED",
+        "reviewerId": "reviewer",
+        "sourceSpans": [{"page": 1}],
+        "splitGroup": family,
+    }
+
+def test_cross_split_duplicate():
+    with pytest.raises(ValueError):
+        freeze_examples(
+            [e2e_example("bookA", "1"), e2e_example("bookB", "2")],
+            {"bookA": "train", "bookB": "test"},
+        )
+
+def test_draft_excluded():
+    e = e2e_example("a", "1")
+    e["reviewStatus"] = "DRAFT"
+    with pytest.raises(ValueError):
+        freeze_examples([e], {"a": "train"})
+
+@pytest.mark.parametrize("ips", [["127.0.0.1"], ["169.254.169.254"], ["::1"], ["10.0.0.1"]])
+def test_import_blocks_internal(ips):
+    with pytest.raises(ValueError):
+        validate_target("https://example.com/a.pdf", ips, {"example.com"})
+
+def test_missing_gate_fails():
+    assert publish_gate({}, {"maximum": {}, "minimum": {}})["passed"] is False

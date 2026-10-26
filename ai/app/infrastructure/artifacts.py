@@ -11,7 +11,7 @@ import tempfile
 
 
 class ArtifactStore:
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path = "artifacts") -> None:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 

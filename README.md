@@ -6,12 +6,12 @@ Bu dört belgeli paket, gönderilen `crypto_lab.zip` içindeki ayrıntılı tasa
 
 ## 1. Belgeler ve karar otoritesi
 
-| Belge | Sorumluluğu | Kodlamaya başlarken |
-|---|---|---|
-| [00-ANA-PROJE.md](00-ANA-PROJE.md) | Kapsam, ortak tipler, HTTP/Kafka/AI sözleşmeleri, entegrasyon ve kabul | Her paketle birlikte okunur |
-| [01-BACKEND.md](01-BACKEND.md) | Spring Boot mikroservisleri, PostgreSQL, Kafka, Redis, finans motoru, güvenlik | Backend uygulama şartnamesi |
-| [02-FRONTEND.md](02-FRONTEND.md) | React ekranları, TypeScript tipleri, akışlar, durum yönetimi ve test | Frontend uygulama şartnamesi |
-| [03-AI.md](03-AI.md) | Eğitim PDF’leri, veri seti, sayısal model, açıklama modeli, inference ve değerlendirme | AI uygulama şartnamesi |
+| Belge                              | Sorumluluğu                                                                            | Kodlamaya başlarken          |
+| ---------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------- |
+| [00-ANA-PROJE.md](00-ANA-PROJE.md) | Kapsam, ortak tipler, HTTP/Kafka/AI sözleşmeleri, entegrasyon ve kabul                 | Her paketle birlikte okunur  |
+| [01-BACKEND.md](01-BACKEND.md)     | Spring Boot mikroservisleri, PostgreSQL, Kafka, Redis, finans motoru, güvenlik         | Backend uygulama şartnamesi  |
+| [02-FRONTEND.md](02-FRONTEND.md)   | React ekranları, TypeScript tipleri, akışlar, durum yönetimi ve test                   | Frontend uygulama şartnamesi |
+| [03-AI.md](03-AI.md)               | Eğitim PDF’leri, veri seti, sayısal model, açıklama modeli, inference ve değerlendirme | AI uygulama şartnamesi       |
 
 Ortak protokolün otoritesi bu dosyadır. Finans matematiğinin otoritesi BACKEND belgesindeki finans bölümüdür. Paketlerden biri farklı DTO/enum üretirse sessiz uyarlama yapılmaz: ortak sözleşme sürümlenir ve tüm tüketiciler birlikte düzeltilir. Eski ZIP’teki dosyalar bu sürüme paralel ikinci gereksinim kaynağı değildir.
 
@@ -44,17 +44,17 @@ Sistem borsaya emir göndermez. Borsa işlem anahtarı, bağlantılı gerçek c�
 
 Üç kod paketi üç mikroservis anlamına gelmez. Backend kendi içinde bağımsız Spring Boot servislerini içerir. AI paketinde eğitim ile tahmin aynı kod tabanını paylaşsa da ayrı süreçlerde çalışır.
 
-| Paket | Süreç | Görev | Kalıcı veri otoritesi |
-|---|---|---|---|
-| backend | identity-service | Kimlik, roller, JWT, refresh | identity_db |
-| backend | market-data-service | Katalog, fiyat/mum/funding, coverage, veri ihracı | market_db |
-| backend | simulation-service | Sanal hesap, emir, risk, ledger, replay | simulation_db |
-| backend | strategy-service | Tarama, analiz işleri, AI orkestrasyonu, öneriler | strategy_db |
-| backend | reporting-service | Rapor projection, bildirim, CSV | reporting_db |
-| backend | api-gateway | Dış route, CORS, limit, SSE proxy | İş verisi yok |
-| frontend | web | React kullanıcı arayüzü ve TRAINER çalışma alanı | Finans/model otoritesi yok |
-| ai | model-api | Hazır sürümle özellik/tahmin/açıklama | model_db metadata, model artifact |
-| ai | training-worker | PDF hazırlama, veri seti, fit/fine-tune, eval | model_db ve training artifact |
+| Paket    | Süreç               | Görev                                             | Kalıcı veri otoritesi             |
+| -------- | ------------------- | ------------------------------------------------- | --------------------------------- |
+| backend  | identity-service    | Kimlik, roller, JWT, refresh                      | identity_db                       |
+| backend  | market-data-service | Katalog, fiyat/mum/funding, coverage, veri ihracı | market_db                         |
+| backend  | simulation-service  | Sanal hesap, emir, risk, ledger, replay           | simulation_db                     |
+| backend  | strategy-service    | Tarama, analiz işleri, AI orkestrasyonu, öneriler | strategy_db                       |
+| backend  | reporting-service   | Rapor projection, bildirim, CSV                   | reporting_db                      |
+| backend  | api-gateway         | Dış route, CORS, limit, SSE proxy                 | İş verisi yok                     |
+| frontend | web                 | React kullanıcı arayüzü ve TRAINER çalışma alanı  | Finans/model otoritesi yok        |
+| ai       | model-api           | Hazır sürümle özellik/tahmin/açıklama             | model_db metadata, model artifact |
+| ai       | training-worker     | PDF hazırlama, veri seti, fit/fine-tune, eval     | model_db ve training artifact     |
 
 [T] AI hesaplama katmanı Python/FastAPI; CPU baseline için scikit-learn. Açıklama modelinin gerçek ince ayarı için açık ağırlıklı model/PEFT adapter’ı. Kesin temel model ve hiperparametreler [A]. Gemini adapter’ı seçilirse yalnız açıklama veya eğitim örneği taslağı üretir; Gemini anahtarı kendi modelini eğitmiş olmak sayılmaz. Ücretli hizmet zorunlu değildir, gizli ücretli fallback bulunmaz.
 
@@ -79,12 +79,12 @@ PDF’ler yalnız eğitim worker’ına girer; inference model artifact’ını 
 
 ## 5. Kullanım modları
 
-| selectionMode | planMode | Davranış |
-|---|---|---|
-| USER | MANUAL | Kullanıcı varlık ve işlem parametrelerini belirler |
-| USER | AI_PLAN | Kullanıcının seçtiği varlık için AI plan önerir |
-| AI_SCAN | MANUAL | Tarama adaylarından kullanıcı seçer ve manuel plan yazar |
-| AI_SCAN | AI_PLAN | Tarama adayı için AI plan hazırlar, kullanıcı onaylar |
+| selectionMode | planMode | Davranış                                                 |
+| ------------- | -------- | -------------------------------------------------------- |
+| USER          | MANUAL   | Kullanıcı varlık ve işlem parametrelerini belirler       |
+| USER          | AI_PLAN  | Kullanıcının seçtiği varlık için AI plan önerir          |
+| AI_SCAN       | MANUAL   | Tarama adaylarından kullanıcı seçer ve manuel plan yazar |
+| AI_SCAN       | AI_PLAN  | Tarama adayı için AI plan hazırlar, kullanıcı onaylar    |
 
 SessionMode yalnız **LIVE_PAPER** (canlı veri, sanal para) veya **HISTORICAL_REPLAY** (kayıtlı veri, sanal saat) olabilir. “LIVE_PAPER” gerçek para anlamına gelmez. UI Türkçe etiketleri “Canlı veriyle simülasyon” ve “Tarihsel test”tir. Gerçek işlem modu enum’da bulunmaz.
 
@@ -92,22 +92,22 @@ Tarihsel araştırma, seçilmiş dataset ve politika için kapalı run’dır. H
 
 ## 6. Ortak temel tipler
 
-| Tip | Normatif tanım |
-|---|---|
-| Id | UUID string; sembol kimlik değildir |
-| Decimal | JSON’da string; `^-?(0|[1-9][0-9]*)(\.[0-9]+)?$`; bilimsel gösterim, NaN/Infinity yok; alan bazında işaret/sınır doğrulanır |
-| Instant | UTC ISO-8601, ör. `2026-10-12T15:00:00.000Z` |
-| Version | Pozitif JSON integer, iyimser kilit/şema sürümü |
-| CursorPage<T> | `{items:T[], nextCursor:string|null, asOf:Instant}`; default 50, max 200 |
-| HorizonSeconds | `60 | 900 | 3600 | 86400 | 604800` |
-| PositionSide | `LONG | SHORT`; orderSide `BUY | SELL` motor tarafından türetilir |
-| OrderType | `MARKET | LIMIT`; attached SL/TP motor içinde stop-market çıkıştır |
-| ExpiryPolicy | `REEVALUATE | CLOSE_AT_DEADLINE` |
-| DataQuality | `WARMING | FRESH | STALE | GAP | UNAVAILABLE` |
-| AnalysisStatus | `QUEUED | WAITING_DATA | RUNNING | SUCCEEDED | FAILED | CANCELLED | EXPIRED` |
-| AnalysisAction | `LONG | SHORT | WAIT`; yalnız SUCCEEDED durumunda doludur |
-| ExplanationStatus | `PENDING | READY | TEMPLATE | UNAVAILABLE` |
-| Role | `USER | TRAINER | ADMIN`; self-register yalnız USER |
+| Tip               | Normatif tanım                                  |
+| ----------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------- | ------------ | ------------ | --------- | -------- |
+| Id                | UUID string; sembol kimlik değildir             |
+| Decimal           | JSON’da string; `^-?(0                          | [1-9][0-9]\*)(\.[0-9]+)?$`; bilimsel gösterim, NaN/Infinity yok; alan bazında işaret/sınır doğrulanır |
+| Instant           | UTC ISO-8601, ör. `2026-10-12T15:00:00.000Z`    |
+| Version           | Pozitif JSON integer, iyimser kilit/şema sürümü |
+| CursorPage<T>     | `{items:T[], nextCursor:string                  | null, asOf:Instant}`; default 50, max 200                                                             |
+| HorizonSeconds    | `60                                             | 900                                                                                                   | 3600                                      | 86400        | 604800`      |
+| PositionSide      | `LONG                                           | SHORT`; orderSide `BUY                                                                                | SELL` motor tarafından türetilir          |
+| OrderType         | `MARKET                                         | LIMIT`; attached SL/TP motor içinde stop-market çıkıştır                                              |
+| ExpiryPolicy      | `REEVALUATE                                     | CLOSE_AT_DEADLINE`                                                                                    |
+| DataQuality       | `WARMING                                        | FRESH                                                                                                 | STALE                                     | GAP          | UNAVAILABLE` |
+| AnalysisStatus    | `QUEUED                                         | WAITING_DATA                                                                                          | RUNNING                                   | SUCCEEDED    | FAILED       | CANCELLED | EXPIRED` |
+| AnalysisAction    | `LONG                                           | SHORT                                                                                                 | WAIT`; yalnız SUCCEEDED durumunda doludur |
+| ExplanationStatus | `PENDING                                        | READY                                                                                                 | TEMPLATE                                  | UNAVAILABLE` |
+| Role              | `USER                                           | TRAINER                                                                                               | ADMIN`; self-register yalnız USER         |
 
 UNKNOWN teknik hata ile WAIT ekonomik/kalite sonucu karıştırılmaz. Model servisine erişilemiyorsa analysis FAILED/MODEL_UNAVAILABLE; model değerlendirdi ve giriş uygun bulmadıysa SUCCEEDED/WAIT olur. Her ikisinde proposal bulunmaz.
 
@@ -139,7 +139,7 @@ Idempotency scope `(subject, route, sessionId-or-resourceScope, key)`; normalize
   "message": "Fiyat onaylanan aralığın dışına çıktı. Önizlemeyi yenileyin.",
   "traceId": "req-example",
   "retryable": false,
-  "details": {"planRevision": 1}
+  "details": { "planRevision": 1 }
 }
 ```
 
@@ -147,20 +147,20 @@ HTTP: 400 şema, 401 kimlik, 403 yetki, 404 kaynak, 409 sürüm/durum, 422 finan
 
 ### 7.1 Auth ve piyasa API’leri
 
-| Metot / yol | İstek | Başarılı yanıt |
-|---|---|---|
-| POST /auth/register | email,password,displayName | 201 UserView |
-| POST /auth/login | email,password | 200 accessToken,expiresIn; HttpOnly refresh cookie |
-| POST /auth/refresh | cookie + Origin/CSRF | 200 yeni accessToken; dönen refresh cookie |
-| POST /auth/logout | cookie + Origin/CSRF | 204 |
-| GET /auth/me | Bearer | UserView{id,displayName,roles} |
-| GET /market/instruments | cursor,query,capability?,exchangeId? | CursorPage<Instrument> |
-| GET /market/instruments/{id} | — | Instrument + coverage |
-| GET /market/quotes | instrumentId | MarketSnapshot |
-| GET /market/candles | instrumentId,interval,priceKind,from,to,cursor? | CursorPage<Candle> |
-| GET /market/funding | instrumentId,from,to | CursorPage<FundingRate> |
-| GET /market/rule-profiles/{id} | — | ImmutableRuleProfile |
-| GET /market/stream | instrumentId | SSE |
+| Metot / yol                    | İstek                                           | Başarılı yanıt                                     |
+| ------------------------------ | ----------------------------------------------- | -------------------------------------------------- |
+| POST /auth/register            | email,password,displayName                      | 201 UserView                                       |
+| POST /auth/login               | email,password                                  | 200 accessToken,expiresIn; HttpOnly refresh cookie |
+| POST /auth/refresh             | cookie + Origin/CSRF                            | 200 yeni accessToken; dönen refresh cookie         |
+| POST /auth/logout              | cookie + Origin/CSRF                            | 204                                                |
+| GET /auth/me                   | Bearer                                          | UserView{id,displayName,roles}                     |
+| GET /market/instruments        | cursor,query,capability?,exchangeId?            | CursorPage<Instrument>                             |
+| GET /market/instruments/{id}   | —                                               | Instrument + coverage                              |
+| GET /market/quotes             | instrumentId                                    | MarketSnapshot                                     |
+| GET /market/candles            | instrumentId,interval,priceKind,from,to,cursor? | CursorPage<Candle>                                 |
+| GET /market/funding            | instrumentId,from,to                            | CursorPage<FundingRate>                            |
+| GET /market/rule-profiles/{id} | —                                               | ImmutableRuleProfile                               |
+| GET /market/stream             | instrumentId                                    | SSE                                                |
 
 MarketSnapshot: `instrumentId, snapshotId, markPrice, lastPrice|null, bidPrice, askPrice, bidQty, askQty, sourceTime, receivedAt, quality, reasonCodes`. Farklı kaynak zamanları mark/quote alt kayıtlarında korunur; üst sourceTime tek başına her alan taze demek değildir.
 Candle: `instrumentId,interval,priceKind,openTime,closeTime,availableAt,open,high,low,close,volume|null,finalized`.
@@ -169,26 +169,26 @@ Candle: `instrumentId,interval,priceKind,openTime,closeTime,availableAt,open,hig
 
 Bütün aşağıdaki yollar `/api/v1/sim` altındadır.
 
-| Metot / yol | İstek | Yanıt / kural |
-|---|---|---|
-| POST /sessions | mode=LIVE_PAPER,initialDeposit,ruleProfileId,riskPolicyId | 201 SessionView |
-| GET /sessions; /sessions/{id} | cursor veya id | Sahip olunan session’lar |
-| GET /sessions/{id}/wallet | — | WalletView |
-| POST /order-previews | ManualPreview veya AiPreview | 201 ExecutionPlan |
-| POST /orders | planId,revision,planHash | 202 CommandAccepted; atomik onay+submit |
-| GET /commands/{id} | — | CommandView |
-| GET /orders; /orders/{id} | sessionId,cursor veya id | OrderView |
-| POST /orders/{id}/cancel | expectedVersion | 202 CommandAccepted |
-| GET /positions | sessionId,cursor | PositionView listesi |
-| POST /positions/{id}/close | expectedVersion,quantity|null | 202 CommandAccepted |
-| PUT /positions/{id}/bracket | expectedVersion,stopLoss,takeProfit | 200 PositionView |
-| POST /sessions/{id}/halt | reason=MANUAL | 200 SessionView |
-| POST /sessions/{id}/resume | expectedVersion | 200; veri/risk gate tekrar |
-| POST /sessions/{id}/close-all | expectedVersion | 202; child command IDs sorgulanır |
-| GET /sessions/{id}/ledger | cursor | CursorPage<JournalTransaction> |
-| GET /sessions/{id}/stream | — | Yetkili session SSE |
-| POST /replays | datasetId,profileId,policyArtifactId,seed | 202 ReplayJob |
-| GET /replays/{id}; POST /replays/{id}/cancel | id | Durum / 202 |
+| Metot / yol                                  | İstek                                                     | Yanıt / kural                           |
+| -------------------------------------------- | --------------------------------------------------------- | --------------------------------------- | ------------------- |
+| POST /sessions                               | mode=LIVE_PAPER,initialDeposit,ruleProfileId,riskPolicyId | 201 SessionView                         |
+| GET /sessions; /sessions/{id}                | cursor veya id                                            | Sahip olunan session’lar                |
+| GET /sessions/{id}/wallet                    | —                                                         | WalletView                              |
+| POST /order-previews                         | ManualPreview veya AiPreview                              | 201 ExecutionPlan                       |
+| POST /orders                                 | planId,revision,planHash                                  | 202 CommandAccepted; atomik onay+submit |
+| GET /commands/{id}                           | —                                                         | CommandView                             |
+| GET /orders; /orders/{id}                    | sessionId,cursor veya id                                  | OrderView                               |
+| POST /orders/{id}/cancel                     | expectedVersion                                           | 202 CommandAccepted                     |
+| GET /positions                               | sessionId,cursor                                          | PositionView listesi                    |
+| POST /positions/{id}/close                   | expectedVersion,quantity                                  | null                                    | 202 CommandAccepted |
+| PUT /positions/{id}/bracket                  | expectedVersion,stopLoss,takeProfit                       | 200 PositionView                        |
+| POST /sessions/{id}/halt                     | reason=MANUAL                                             | 200 SessionView                         |
+| POST /sessions/{id}/resume                   | expectedVersion                                           | 200; veri/risk gate tekrar              |
+| POST /sessions/{id}/close-all                | expectedVersion                                           | 202; child command IDs sorgulanır       |
+| GET /sessions/{id}/ledger                    | cursor                                                    | CursorPage<JournalTransaction>          |
+| GET /sessions/{id}/stream                    | —                                                         | Yetkili session SSE                     |
+| POST /replays                                | datasetId,profileId,policyArtifactId,seed                 | 202 ReplayJob                           |
+| GET /replays/{id}; POST /replays/{id}/cancel | id                                                        | Durum / 202                             |
 
 Tek submit endpoint’i onay ve komut kabulünü atomik yapar. Ayrı `/approvals` endpoint’i yoktur; approval audit satırı sunucuda oluşturulur. Eski paketteki alternatif submit şekilleri uygulanmaz.
 
@@ -216,21 +216,21 @@ WalletView: `sessionId,availableCash,reservedCash,isolatedCash,unrealizedPnl,equ
 
 ### 7.3 Strategy ve rapor API’leri
 
-| Metot / yol | İstek | Yanıt |
-|---|---|---|
-| POST /strategy/scans | sessionId,horizonSeconds,filters | 202 ScanJob |
-| GET /strategy/scans/{id} | — | status,cursor,coverage,candidates |
-| POST /strategy/scans/{id}/cancel | — | 202 |
-| POST /strategy/analyses | sessionId,instrumentId,horizonSeconds | 202 AnalysisJob |
-| GET /strategy/analyses/{id} | — | AnalysisView |
-| GET /strategy/proposals/{id} | — | ProposalView |
-| GET /reports/sessions/{id}/summary | — | SummaryView |
-| GET /reports/sessions/{id}/equity | interval | Samples + projectionAsOf |
-| GET /reports/sessions/{id}/trades | cursor | CursorPage<TradeSummary> |
-| GET /reports/notifications | cursor | CursorPage<Notification> |
-| POST /reports/notifications/{id}/read | — | 204 |
-| POST /reports/exports | sessionId,format=CSV | 202 ExportJob |
-| GET /reports/exports/{id} | — | status,authorizedDownloadPath|null |
+| Metot / yol                           | İstek                                 | Yanıt                             |
+| ------------------------------------- | ------------------------------------- | --------------------------------- | ---- |
+| POST /strategy/scans                  | sessionId,horizonSeconds,filters      | 202 ScanJob                       |
+| GET /strategy/scans/{id}              | —                                     | status,cursor,coverage,candidates |
+| POST /strategy/scans/{id}/cancel      | —                                     | 202                               |
+| POST /strategy/analyses               | sessionId,instrumentId,horizonSeconds | 202 AnalysisJob                   |
+| GET /strategy/analyses/{id}           | —                                     | AnalysisView                      |
+| GET /strategy/proposals/{id}          | —                                     | ProposalView                      |
+| GET /reports/sessions/{id}/summary    | —                                     | SummaryView                       |
+| GET /reports/sessions/{id}/equity     | interval                              | Samples + projectionAsOf          |
+| GET /reports/sessions/{id}/trades     | cursor                                | CursorPage<TradeSummary>          |
+| GET /reports/notifications            | cursor                                | CursorPage<Notification>          |
+| POST /reports/notifications/{id}/read | —                                     | 204                               |
+| POST /reports/exports                 | sessionId,format=CSV                  | 202 ExportJob                     |
+| GET /reports/exports/{id}             | —                                     | status,authorizedDownloadPath     | null |
 
 AnalysisView: `id,sessionId,instrumentId,horizonSeconds,status,action|null,reasonCodes[],modelBundleId|null,featureSnapshotId|null,marketAsOf|null,proposalId|null,explanationStatus,explanation|null,createdAt,updatedAt`.
 ProposalView: `id,revision,sessionId,instrumentId,positionGeneration,action:LONG|SHORT,orderType,limitPrice|null,suggestedLeverage,stopLoss,takeProfit,horizonSeconds,expiryPolicy,modelBundleId,featureSnapshotId,policyVersion,createdAt,validUntil,reasonCodes[]`. Margin/quantity kullanıcı risk politikası ile Simulation tarafından belirlenir. WAIT proposal üretmez. Açıklama boş olabilir; sayısal/risk değerlendirmesi gerekçeleri reasonCodes ile görünür.
@@ -239,22 +239,22 @@ ProposalView: `id,revision,sessionId,instrumentId,positionGeneration,action:LONG
 
 Yalnız TRAINER/ADMIN; `/api/v1/strategy/training` altında Strategy facade ile AI’ye gider. USER erişimi 403. Dosya limitleri ayrı route konfigürasyonudur.
 
-| Metot / son ek | İstek | Sonuç |
-|---|---|---|
-| POST /sources | multipart PDF + title,author?,rightsDeclaration | 202 SourceJob |
-| POST /source-imports | url,title,rightsDeclaration | 202 SourceJob |
-| GET /sources; /sources/{id} | cursor/id | Metadata, training-only durum |
-| GET /sources/{id}/pages/{page} | yetki | Güvenli sayfa önizlemesi |
-| DELETE /sources/{id} | expectedVersion | 202 silme işi/lineage işareti |
-| POST /example-jobs | sourceVersionIds,taskTypes | 202 Job |
-| GET /examples | datasetId,cursor | Eğitim örnekleri |
-| PATCH /examples/{id} | expectedVersion,reviewStatus,correctedTarget? | 200 Example |
-| POST /datasets | numeric/export veya reviewed-example manifest | 201 Dataset |
-| POST /runs | task,datasetId,baseModelRevision?,config,seed | 202 TrainingRun |
-| GET /runs/{id}; POST /runs/{id}/cancel | — | Durum / 202 |
-| GET /models; /models/{id} | — | ModelCard |
-| POST /models/{id}/promote | expectedAliasVersion,evaluationId | 200 Release |
-| POST /models/{id}/rollback | expectedAliasVersion,reason | 200 Release |
+| Metot / son ek                         | İstek                                           | Sonuç                         |
+| -------------------------------------- | ----------------------------------------------- | ----------------------------- |
+| POST /sources                          | multipart PDF + title,author?,rightsDeclaration | 202 SourceJob                 |
+| POST /source-imports                   | url,title,rightsDeclaration                     | 202 SourceJob                 |
+| GET /sources; /sources/{id}            | cursor/id                                       | Metadata, training-only durum |
+| GET /sources/{id}/pages/{page}         | yetki                                           | Güvenli sayfa önizlemesi      |
+| DELETE /sources/{id}                   | expectedVersion                                 | 202 silme işi/lineage işareti |
+| POST /example-jobs                     | sourceVersionIds,taskTypes                      | 202 Job                       |
+| GET /examples                          | datasetId,cursor                                | Eğitim örnekleri              |
+| PATCH /examples/{id}                   | expectedVersion,reviewStatus,correctedTarget?   | 200 Example                   |
+| POST /datasets                         | numeric/export veya reviewed-example manifest   | 201 Dataset                   |
+| POST /runs                             | task,datasetId,baseModelRevision?,config,seed   | 202 TrainingRun               |
+| GET /runs/{id}; POST /runs/{id}/cancel | —                                               | Durum / 202                   |
+| GET /models; /models/{id}              | —                                               | ModelCard                     |
+| POST /models/{id}/promote              | expectedAliasVersion,evaluationId               | 200 Release                   |
+| POST /models/{id}/rollback             | expectedAliasVersion,reason                     | 200 Release                   |
 
 TRAINER veri/eğitim yönetebilir; promotion ve rollback için ek `MODEL_PUBLISH` authority gerekir, ADMIN kontrollü verir. Kullanıcı kendi rolünü değiştiremez.
 
@@ -294,22 +294,23 @@ Skorlar finite JSON number olabilir; finans fiyatı/quantity olarak doğrudan ku
 
 ## 9. Kafka sözleşmeleri
 
-| Topic | Key | Üreten → tüketen |
-|---|---|---|
-| market.mark.v2 | instrumentId | Market → Simulation, Strategy |
-| market.quote.v2 | instrumentId | Market → Simulation |
-| market.candle.closed.v2 | instrumentId:interval | Market → Strategy, AI feature consumer |
-| market.funding.settled.v2 | instrumentId | Market → Simulation |
-| market.instrument.v2 | instrumentId | Market → Simulation, Strategy |
-| system.data-quality.v2 | source:instrumentId | Market → Simulation, Strategy, Reporting |
-| simulation.events.v2 | sessionId | Simulation → Reporting, Strategy |
-| strategy.proposals.v1 | sessionId | Strategy → Reporting |
-| model.lifecycle.v1 | modelVersionId | AI → Strategy, Reporting |
-| training.jobs.v1 | jobId | AI → Strategy training projection |
+| Topic                     | Key                   | Üreten → tüketen                         |
+| ------------------------- | --------------------- | ---------------------------------------- |
+| market.mark.v2            | instrumentId          | Market → Simulation, Strategy            |
+| market.quote.v2           | instrumentId          | Market → Simulation                      |
+| market.candle.closed.v2   | instrumentId:interval | Market → Strategy, AI feature consumer   |
+| market.funding.settled.v2 | instrumentId          | Market → Simulation                      |
+| market.instrument.v2      | instrumentId          | Market → Simulation, Strategy            |
+| system.data-quality.v2    | source:instrumentId   | Market → Simulation, Strategy, Reporting |
+| simulation.events.v2      | sessionId             | Simulation → Reporting, Strategy         |
+| strategy.proposals.v1     | sessionId             | Strategy → Reporting                     |
+| model.lifecycle.v1        | modelVersionId        | AI → Strategy, Reporting                 |
+| training.jobs.v1          | jobId                 | AI → Strategy training projection        |
 
 Temel zarf: `eventId,eventType,schemaVersion,occurredAt,recordedAt,producer,aggregateId,aggregateVersion,correlationId,causationId|null,payload`. Simulation olayları ayrıca `sessionId,engineSequence,transactionId,transactionOrdinal` taşır. Session engineSequence olay başına monoton artar; aynı transaction içindeki olaylar farklı sıra alır. UUID eventId tekrar teslimde değişmez. Finans/numeric market alanları Decimal string’dir.
 
 Payload zorunluları:
+
 - MarkUpdated: instrumentId,markPrice,sourceTime,receivedAt,connectionEpoch,sourceSequence|null.
 - QuoteUpdated: instrumentId,bidPrice,bidQty,askPrice,askQty,sourceTime,receivedAt,connectionEpoch,updateId.
 - CandleClosed: instrumentId,interval,priceKind,openTime,closeTime,availableAt,open,high,low,close,volume|null,finalized=true.
@@ -364,23 +365,23 @@ Bunlar geliştirme sırasıdır; gerçek bot fazı yoktur. Ara teslimde yalnız 
 
 ## 14. Teslim ve kabul
 
-| ID | Senaryo | Beklenen kanıt |
-|---|---|---|
-| A01 | Hiç PDF eklememiş USER analiz/işlem yapar | E2E kayıt→analiz→onay→fill→close |
-| A02 | Eğitim deposu/worker kapalı | Hazır model inference ve manuel işlem sürer |
-| A03 | Inference container | PDF/OCR/retrieval paketi/volume zorunluluğu yok |
-| A04 | Yeni eligible varlık | Kodda coin enum değişmeden katalog ve analiz |
-| A05 | Scan veya training başlatılır | Yeni order oluşmaz |
-| A06 | Duplicate submit / Kafka / funding | Tek finans etkisi |
-| A07 | Mark ve last farklı | Likidasyon mark’tan |
-| A08 | Eski plan / fiyat sınırı / close generation | Emir yok, doğru reason |
-| A09 | Model eğitimde görmediği varlık ve gelecek dönem | Ayrı cohort maliyetli rapor |
-| A10 | Train/test sızıntısı | Eğitim gate fail |
-| A11 | PDF yalnız eklendi | Model sürümü değişmez |
-| A12 | Fine-tuning tamamlandı | Hash’li yeni ağırlık/adapter, ayrı eval |
-| A13 | Rapor yeniden oluşturulur | Ledger toplamlarıyla mutabakat |
-| A14 | Kaynak/servis hatası | Başarılı analiz veya fill uydurulmaz |
-| A15 | Ağ yüzeyi ve config | Yalnız veri sağlayıcı entegrasyonu; gerçek emir adapter’ı yok |
+| ID  | Senaryo                                          | Beklenen kanıt                                                |
+| --- | ------------------------------------------------ | ------------------------------------------------------------- |
+| A01 | Hiç PDF eklememiş USER analiz/işlem yapar        | E2E kayıt→analiz→onay→fill→close                              |
+| A02 | Eğitim deposu/worker kapalı                      | Hazır model inference ve manuel işlem sürer                   |
+| A03 | Inference container                              | PDF/OCR/retrieval paketi/volume zorunluluğu yok               |
+| A04 | Yeni eligible varlık                             | Kodda coin enum değişmeden katalog ve analiz                  |
+| A05 | Scan veya training başlatılır                    | Yeni order oluşmaz                                            |
+| A06 | Duplicate submit / Kafka / funding               | Tek finans etkisi                                             |
+| A07 | Mark ve last farklı                              | Likidasyon mark’tan                                           |
+| A08 | Eski plan / fiyat sınırı / close generation      | Emir yok, doğru reason                                        |
+| A09 | Model eğitimde görmediği varlık ve gelecek dönem | Ayrı cohort maliyetli rapor                                   |
+| A10 | Train/test sızıntısı                             | Eğitim gate fail                                              |
+| A11 | PDF yalnız eklendi                               | Model sürümü değişmez                                         |
+| A12 | Fine-tuning tamamlandı                           | Hash’li yeni ağırlık/adapter, ayrı eval                       |
+| A13 | Rapor yeniden oluşturulur                        | Ledger toplamlarıyla mutabakat                                |
+| A14 | Kaynak/servis hatası                             | Başarılı analiz veya fill uydurulmaz                          |
+| A15 | Ağ yüzeyi ve config                              | Yalnız veri sağlayıcı entegrasyonu; gerçek emir adapter’ı yok |
 
 Uygulama kabul kapıları: sıfır ledger imbalance; para etkisinin tekrarlanmaması; kullanıcılar arası yetki testi; active modelin hata durumunda korunması; JSON/OpenAPI/event schema contract testleri; seed ve fixture ile yeniden üretilebilen demo. Kâr pozitifliği bilimsel sonuçtur, doğruluk testinin yerine geçmez.
 
@@ -431,9 +432,9 @@ Kodlamada aşağıdaki schema `contracts/http/submit-order.schema.json` olarak o
   "additionalProperties": false,
   "required": ["planId", "revision", "planHash"],
   "properties": {
-    "planId": {"type": "string", "format": "uuid"},
-    "revision": {"type": "integer", "minimum": 1},
-    "planHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    "planId": { "type": "string", "format": "uuid" },
+    "revision": { "type": "integer", "minimum": 1 },
+    "planHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
   }
 }
 ```
@@ -466,8 +467,16 @@ Diğer command request’leri de strict additionalProperties=false ile. Event co
     "positionId": null,
     "orderId": null,
     "postings": [
-      {"accountId": "11111111-1111-4111-8111-111111111112", "amount": "10000", "currency": "USDT"},
-      {"accountId": "11111111-1111-4111-8111-111111111113", "amount": "-10000", "currency": "USDT"}
+      {
+        "accountId": "11111111-1111-4111-8111-111111111112",
+        "amount": "10000",
+        "currency": "USDT"
+      },
+      {
+        "accountId": "11111111-1111-4111-8111-111111111113",
+        "amount": "-10000",
+        "currency": "USDT"
+      }
     ]
   }
 }
@@ -477,22 +486,22 @@ Posting toplamı sıfırdır. eventId tekrar teslimde aynıdır; transactionOrdi
 
 ### 16.5 Kritik hata kodları ve istemci davranışı
 
-| Kod | HTTP/job | Davranış |
-|---|---|---|
-| IDEMPOTENCY_CONFLICT | 409 | Aynı key farklı body; kullanıcı eylemini incele, kör tekrar yok |
-| VERSION_CONFLICT | 409 | Kaynağı tazele, değişikliği kullanıcı yeniden değerlendirir |
-| REVALIDATION_REQUIRED | 409/command REJECTED | Yeni preview ve onay |
-| PLAN_EXPIRED / PLAN_REVOKED | 409 | Eski planla submit yok |
-| INSUFFICIENT_AVAILABLE_BALANCE | 422 | Budget değiştir; ücret dahil açıklama |
-| INSTRUMENT_NOT_TRADABLE | 422 | Capability reason göster |
-| STALE_MARK / STALE_QUOTE | 503 | Giriş durur; veri tazelenmesini bekle |
-| LIQUIDITY_LIMIT | 422/order reason | Modelin miktar sınırı; kapanış state’i ayrı takip |
-| MODEL_NOT_READY / MODEL_UNAVAILABLE | 503/job FAILED | Eğitilmiş tahmin uydurma |
-| INSUFFICIENT_HISTORY | Analysis SUCCEEDED/WAIT | Veri hazırlanabilir, emir yok |
-| OUT_OF_DOMAIN | Analysis SUCCEEDED/WAIT | Model uygun değerlendiremiyor |
-| FEATURE_SCHEMA_MISMATCH | internal 422/job FAILED | Kod/model uyumunu düzelt |
-| TRAINING_SOURCE_INVALID | job FAILED | Eğitmen kaynak kontrolü |
-| PUBLISH_GATE_FAILED | 422 | Aday active olmaz |
+| Kod                                 | HTTP/job                | Davranış                                                        |
+| ----------------------------------- | ----------------------- | --------------------------------------------------------------- |
+| IDEMPOTENCY_CONFLICT                | 409                     | Aynı key farklı body; kullanıcı eylemini incele, kör tekrar yok |
+| VERSION_CONFLICT                    | 409                     | Kaynağı tazele, değişikliği kullanıcı yeniden değerlendirir     |
+| REVALIDATION_REQUIRED               | 409/command REJECTED    | Yeni preview ve onay                                            |
+| PLAN_EXPIRED / PLAN_REVOKED         | 409                     | Eski planla submit yok                                          |
+| INSUFFICIENT_AVAILABLE_BALANCE      | 422                     | Budget değiştir; ücret dahil açıklama                           |
+| INSTRUMENT_NOT_TRADABLE             | 422                     | Capability reason göster                                        |
+| STALE_MARK / STALE_QUOTE            | 503                     | Giriş durur; veri tazelenmesini bekle                           |
+| LIQUIDITY_LIMIT                     | 422/order reason        | Modelin miktar sınırı; kapanış state’i ayrı takip               |
+| MODEL_NOT_READY / MODEL_UNAVAILABLE | 503/job FAILED          | Eğitilmiş tahmin uydurma                                        |
+| INSUFFICIENT_HISTORY                | Analysis SUCCEEDED/WAIT | Veri hazırlanabilir, emir yok                                   |
+| OUT_OF_DOMAIN                       | Analysis SUCCEEDED/WAIT | Model uygun değerlendiremiyor                                   |
+| FEATURE_SCHEMA_MISMATCH             | internal 422/job FAILED | Kod/model uyumunu düzelt                                        |
+| TRAINING_SOURCE_INVALID             | job FAILED              | Eğitmen kaynak kontrolü                                         |
+| PUBLISH_GATE_FAILED                 | 422                     | Aday active olmaz                                               |
 
 ### 16.6 Sözleşme geliştirme kapısı
 
@@ -503,3 +512,6 @@ Kodlamanın ilk ortak işi `contracts/http`, `contracts/events`, `contracts/inte
 ## 17. Bu doküman paketinin kontrol kaydı
 
 12 Ekim 2026: dört Markdown dosyasında 13 yerel bağlantı ve 6 JSON örneği kontrol edildi; kod blokları dengeli. Python Decimal ile 22 finans fixture/eşik kontrolü yeniden çalıştırıldı. Strict submit schema’sında geçerli örnek ve üç geçersiz istek kontrol edildi. Bu kontroller belge örneklerine aittir. Java/React/AI uygulaması geliştirilmedi, gerçek piyasa bağlantısı veya model eğitimi yapılmadı; uygulama kabul testleri kodlama aşamasında çalıştırılacaktır.
+
+Inference (Serving): ai/.venv/Scripts/python.exe -m uvicorn app.main:app --port 8091
+Training / Veri Yönetimi: ai/.venv/Scripts/python.exe -m uvicorn app.training_main:app --port 8092

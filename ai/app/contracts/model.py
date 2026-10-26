@@ -132,3 +132,20 @@ class ActiveModelBundle(StrictModel):
 
     # Yayin durumu registry tarafinda kontrol edilecek.
     releaseStatus: str
+
+
+class ExplanationRequest(StrictModel):
+    requestId: UUID
+    modelBundleId: UUID
+    predictionResult: PredictionResult
+    validatedPolicyOutcome: dict
+    verifiedFeatureSummary: dict
+    language: str = "tr"
+
+
+class ExplanationResult(StrictModel):
+    status: Literal["READY", "TEMPLATE", "UNAVAILABLE"]
+    explanationModelVersion: str | None
+    text: str
+    reasonCodes: list[str]
+    latencyMs: Annotated[int, Field(ge=0)]
