@@ -570,10 +570,13 @@ class GeminiReviewer:
     def __init__(self, api_key: str, config: ConfigManager):
         self.api_key = api_key
         self.config = config
-        self.models = [
-            config.config["models"]["primary"],
-            config.config["models"]["fallback"],
+        configured_models = [
+            config.config["models"].get("primary", "gemini-2.5-flash"),
+            config.config["models"].get("fallback", "gemini-2.0-flash"),
+            "gemini-1.5-flash",
         ]
+        seen = set()
+        self.models = [m for m in configured_models if not (m in seen or seen.add(m))]
 
     def build_system_prompt(self, repo_name: str, projects: Dict[str, ProjectInfo]) -> str:
         project_desc_lines = []
@@ -608,6 +611,32 @@ Hedef Repository: `{repo_name}` (Çok projeli, farklı teknolojiler ve egzersizl
    - P1: Ciddi mantık hatası, race condition, veri bütünlüğü bozulması.
    - P2: Performans darboğazı (N+1), eksik hata yönetimi, edge-case null riskleri.
    - P3: Best practice, kod kalitesi, eksik birim testi.
+
+### İSTENEN JSON ÇIKTI FORMATI:
+Yanıtını YALNIZCA aşağıdaki JSON şemasına birebir uygun üret:
+{{
+  "summary": {{
+    "status": "GREEN" | "YELLOW" | "RED",
+    "short_summary": "1-3 cümlelik Türkçe profesyonel inceleme özeti.",
+    "affected_projects_summary": "İncelenen projelerin mimari ve teknoloji bazlı değerlendirmesi."
+  }},
+  "findings": [
+    {{
+      "id": "f-1",
+      "file_path": "dosya/yolu.uzanti",
+      "line_number": 42,
+      "title": "Kısa teknik başlık",
+      "severity": "P0",
+      "confidence": "HIGH",
+      "category": "SECURITY",
+      "where": "Dosya ve satır/metot konumu",
+      "condition": "Hangi koşulda / senaryoda tetiklenir",
+      "impact": "Sisteme veya veriye somut etkisi",
+      "remediation": "Nasıl düzeltilir (örnek kod ile)",
+      "verification_test": "Hangi birim veya entegrasyon testi ile doğrulanabilir"
+    }}
+  ]
+}}
 """
 
     def review_diff(
@@ -623,11 +652,12 @@ Hedef Repository: `{repo_name}` (Çok projeli, farklı teknolojiler ve egzersizl
         system_prompt = self.build_system_prompt(repo_name, projects)
         user_content = (
             f"Lütfen aşağıdaki PR diff değişikliklerini ve kod bağlamını incele. "
-            f"Yalnızca tanımlı JSON şemasına uygun çıktı üret:\n\n"
+            f"Yalnızca tanımlı JSON formatında çıktı üret:\n\n"
             f"<untrusted_pr_diff>\n{prepared_diff_text}\n</untrusted_pr_diff>"
         )
 
         backoff_delays = [3, 8, 15]
+        last_error = "Gemini API yanıtı alınamadı."
 
         for model_name in self.models:
             print(f"Gemini modeli deneniyor: {model_name}...")
@@ -640,13 +670,22 @@ Hedef Repository: `{repo_name}` (Çok projeli, farklı teknolojiler ve egzersizl
                             return parsed, f"Başarılı ({model_name})"
                 except Exception as e:
                     err_str = str(e)
+                    last_error = err_str
                     print(f"{model_name} (deneme {attempt}/{len(backoff_delays)}) hata: {err_str[:160]}")
                     if any(x in err_str.lower() for x in ("429", "resource_exhausted", "503", "overloaded")):
                         time.sleep(delay)
                     else:
                         break
 
-        return None, "Gemini API çağrısı başarısız oldu (Kota/Sunucu hatası)."
+        # Ayrıntılı hata analizi
+        if any(x in last_error.lower() for x in ("401", "403", "api_key", "permission_denied")):
+            return None, "GEMINI_API_KEY geçersiz veya yetkisiz (HTTP 401/403)."
+        elif any(x in last_error.lower() for x in ("429", "resource_exhausted")):
+            return None, "Gemini API ücretsiz kota sınırı (15 RPM / 1.500 RPD) aşıldı (HTTP 429)."
+        elif any(x in last_error.lower() for x in ("500", "503", "overloaded")):
+            return None, "Gemini sunucu yoğunluğu (Geçici hata, HTTP 500/503)."
+        else:
+            return None, f"Gemini API hatası: {last_error[:120]}"
 
     def _call_model(self, model_name: str, system_prompt: str, user_content: str) -> Optional[str]:
         """Önce SDK'yı dener, yoksa REST API fallback kullanır."""
@@ -658,7 +697,6 @@ Hedef Repository: `{repo_name}` (Çok projeli, farklı teknolojiler ve egzersizl
                     system_instruction=system_prompt,
                     temperature=self.config.config["models"].get("temperature", 0.1),
                     response_mime_type="application/json",
-                    response_schema=self.RESPONSE_SCHEMA,
                 )
                 resp = client.models.generate_content(
                     model=model_name,
@@ -669,18 +707,21 @@ Hedef Repository: `{repo_name}` (Çok projeli, farklı teknolojiler ve egzersizl
                     return resp.text.strip()
             except Exception as e:
                 # SDK başarısız olursa HTTP fallback'e devam et
-                print(f"SDK hatası ({model_name}), REST API fallback deneniyor: {e}")
+                print(f"[{model_name}] SDK hatası, REST API fallback deneniyor: {e}")
 
-        # 2. Doğrudan REST API Fallback Yolu (Sıfır ek kütüphane bağımlılığı)
+        # 2. Doğrudan REST API Fallback Yolu (Resmi Google Generative Language v1beta REST spesifikasyonu)
         endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
         payload = {
-            "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": [{"parts": [{"text": user_content}]}],
+            "systemInstruction": {
+                "parts": [{"text": system_prompt}]
+            },
+            "contents": [
+                {"parts": [{"text": user_content}]}
+            ],
             "generationConfig": {
                 "temperature": self.config.config["models"].get("temperature", 0.1),
-                "response_mime_type": "application/json",
-                "response_schema": self.RESPONSE_SCHEMA,
-            },
+                "responseMimeType": "application/json"
+            }
         }
 
         req = Request(
@@ -690,13 +731,21 @@ Hedef Repository: `{repo_name}` (Çok projeli, farklı teknolojiler ve egzersizl
             method="POST",
         )
 
-        with urlopen(req, timeout=self.config.config["limits"].get("request_timeout_seconds", 45)) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if parts:
-                    return parts[0].get("text", "").strip()
+        try:
+            with urlopen(req, timeout=self.config.config["limits"].get("request_timeout_seconds", 45)) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts:
+                        return parts[0].get("text", "").strip()
+        except HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+            print(f"[{model_name}] REST API HTTP {e.code} Hatası: {err_body[:300]}")
+            raise Exception(f"HTTP {e.code}: {err_body[:200]}")
+        except Exception as e:
+            print(f"[{model_name}] REST API Bağlantı Hatası: {e}")
+            raise
 
         return None
 

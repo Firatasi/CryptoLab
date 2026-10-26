@@ -8,11 +8,12 @@ repository_name: "fullstack-excercises"
 
 # AI Model Ayarları
 # Google AI Studio Free Tier kapsamında:
-# - gemini-2.0-flash: 15 RPM, 1.500 RPD, 1M TPM, $0 maliyet (Varsayılan)
-# - gemini-1.5-flash: Kararlı ikincil yedek model (Fallback)
+# - gemini-2.5-flash: En güncel hibrit akıl yürütme ve yüksek bağlamlı Flash modeli (Varsayılan)
+# - gemini-2.0-flash: Yüksek hızlı kararlı ikincil model
+# - gemini-1.5-flash: Dayanıklı fallback modeli
 models:
-  primary: "gemini-2.0-flash"
-  fallback: "gemini-1.5-flash"
+  primary: "gemini-2.5-flash"
+  fallback: "gemini-2.0-flash"
   temperature: 0.1
 
 # İnceleme Davranışı
