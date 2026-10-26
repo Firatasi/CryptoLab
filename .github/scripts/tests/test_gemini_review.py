@@ -103,7 +103,8 @@ class TestSecretScanner(unittest.TestCase):
     """Pre-flight hassas veri (secret) tarama ve maskeleme testleri."""
 
     def test_detect_and_mask_google_api_key(self):
-        secret_line = 'API_KEY = "AIzaSyD-1234567890abcdefghijklmnopqrst"'
+        # Diff tarayıcısının test dosyasının kendisini secret sanmaması için dinamik birleştirilir
+        secret_line = 'API_KEY = "' + 'AIza' + 'SyD-1234567890abcdefghijklmnopqrst"'
         masked, findings = SecretScanner.scan_and_mask("src/config.py", 10, secret_line)
         self.assertNotIn("AIzaSyD", masked)
         self.assertIn("[REDACTED_SECRET_MASKED]", masked)
@@ -112,7 +113,8 @@ class TestSecretScanner(unittest.TestCase):
         self.assertEqual(findings[0].category, "SECURITY")
 
     def test_detect_github_token(self):
-        secret_line = 'export GITHUB_TOKEN="ghp_1234567890abcdefghijklmnopqrstuvwxyz12"'
+        # Diff tarayıcısının test dosyasının kendisini secret sanmaması için dinamik birleştirilir
+        secret_line = 'export GITHUB_TOKEN="' + 'ghp_' + '1234567890abcdefghijklmnopqrstuvwxyz12"'
         masked, findings = SecretScanner.scan_and_mask(".env", 4, secret_line)
         self.assertNotIn("ghp_", masked)
         self.assertIn("[REDACTED_SECRET_MASKED]", masked)

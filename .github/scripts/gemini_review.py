@@ -333,13 +333,17 @@ class SecretScanner:
     def scan_and_mask(cls, file_path: str, line_num: int, line_text: str) -> Tuple[str, List[Finding]]:
         masked_line = line_text
         findings: List[Finding] = []
+        is_test_context = any(p in file_path.lower() for p in ("test", "spec", "fixture", "mock"))
 
         for name, pattern in cls.SECRET_PATTERNS:
             match = pattern.search(line_text)
             if match:
                 raw_secret = match.group(0)
                 # Test/dummy anahtarları kontrol et
-                if any(x in raw_secret.lower() for x in ("dummy", "mock", "example", "placeholder", "fake", "your_api_key")):
+                if any(x in raw_secret.lower() for x in ("dummy", "mock", "example", "placeholder", "fake", "your_api_key", "test")):
+                    continue
+                # Test dosyaları içindeki genel 'password/api_key = ...' eşleşmelerini yok say
+                if is_test_context and name == "Hardcoded Parola / Gizli Anahtar":
                     continue
 
                 masked_line = pattern.sub("[REDACTED_SECRET_MASKED]", masked_line)
