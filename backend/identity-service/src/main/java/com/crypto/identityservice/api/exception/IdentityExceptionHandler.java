@@ -6,10 +6,14 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,10 +52,22 @@ public class IdentityExceptionHandler {
     @ExceptionHandler({
             MethodArgumentNotValidException.class,
             MissingRequestHeaderException.class,
+            MissingServletRequestParameterException.class,
+            MethodArgumentTypeMismatchException.class,
             HttpMessageNotReadableException.class
     })
     public ResponseEntity<?> invalidRequest(Exception exception) {
         return error(400, "INVALID_REQUEST");
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<?> notFound(NoResourceFoundException exception) {
+        return error(404, "NOT_FOUND");
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<?> methodNotAllowed(HttpRequestMethodNotSupportedException exception) {
+        return error(405, "METHOD_NOT_ALLOWED");
     }
 
     @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
@@ -68,6 +84,10 @@ public class IdentityExceptionHandler {
         if ("INVALID_CREDENTIALS".equals(exception.getMessage())) {
             return error(401, "INVALID_CREDENTIALS");
         }
+        if ("CAPTCHA_INVALID".equals(exception.getMessage())
+                || "CAPTCHA_EXPIRED".equals(exception.getMessage())) {
+            return error(400, exception.getMessage());
+        }
 
         return error(400, "INVALID_REQUEST");
     }
@@ -77,7 +97,10 @@ public class IdentityExceptionHandler {
             IllegalStateException exception
     ) {
         if ("RATE_LIMITED".equals(exception.getMessage())) {
-            return error(429, "RATE_LIMITED");
+            return ResponseEntity.status(429)
+                    .header("Cache-Control", "no-store")
+                    .header("Retry-After", "60")
+                    .body(ErrorResponses.body("RATE_LIMITED"));
         }
 
         if ("IDEMPOTENCY_CONFLICT".equals(exception.getMessage())) {

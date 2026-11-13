@@ -23,6 +23,8 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -151,16 +153,25 @@ public class SecurityConfig {
                 )
 
                 .requestCache(cache -> cache.disable())
+                .headers(headers -> headers
+                        .frameOptions(frame -> frame.deny())
+                        .contentTypeOptions(Customizer.withDefaults())
+                        .referrerPolicy(referrer -> referrer.policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER))
+                )
 
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(
                                 "/actuator/health",
                                 "/.well-known/jwks.json",
+                                "/api/v1/auth/captcha",
+                                "/api/v1/auth/contact",
                                 "/api/v1/auth/register",
                                 "/api/v1/auth/login",
                                 "/api/v1/auth/refresh",
                                 "/api/v1/auth/logout"
                         ).permitAll()
+
+                        .requestMatchers("/api/v1/auth/admin/**").hasRole("ADMIN")
 
                         .requestMatchers("/internal/**").denyAll()
 

@@ -40,6 +40,7 @@ public class IdentityService {
     private final PasswordEncoder passwords;
     private final TokenIssuer accessTokens;
     private final LoginLimiter limiter;
+    private final CaptchaService captchaService;
     private final Clock clock;
     private final String dummyHash;
     private final byte[] registrationHashKey;
@@ -49,6 +50,7 @@ public class IdentityService {
             PasswordEncoder passwords,
             TokenIssuer accessTokens,
             LoginLimiter limiter,
+            CaptchaService captchaService,
             Clock clock,
             @Value("${registration.hash-key}") String registrationHashKey
     ) {
@@ -56,6 +58,7 @@ public class IdentityService {
         this.passwords = passwords;
         this.accessTokens = accessTokens;
         this.limiter = limiter;
+        this.captchaService = captchaService;
         this.clock = clock;
 
         // Olmayan kullanıcıda da BCrypt doğrulaması yapabilmek için.
@@ -112,6 +115,8 @@ public class IdentityService {
 
             return previous.get().userId();
         }
+
+        captchaService.verifyAndConsume(command.captchaId(), command.captchaAnswer());
 
         UUID userId = UUID.randomUUID();
 
@@ -172,14 +177,16 @@ public class IdentityService {
 
     private Issued issue(UUID userId, UUID familyId) {
         String rawRefreshToken = Crypto.randomToken();
+        var now = clock.instant();
 
         users.insertRefresh(
                 UUID.randomUUID(),
                 userId,
                 Crypto.hash(rawRefreshToken),
                 familyId,
-                clock.instant().plusSeconds(604_800)
+                now.plusSeconds(604_800)
         );
+        users.touchLastSeen(userId, now);
 
         return new Issued(
                 accessTokens.issue(userId),

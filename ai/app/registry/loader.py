@@ -8,18 +8,20 @@
 - Aktif bundle yoksa MODEL_NOT_READY hatası verilir (HTTP 503).
 """
 from dataclasses import dataclass
+import json
 from typing import Mapping
 from uuid import UUID
 
 from app.contracts.model import ActiveModelBundle
 from app.inference.numeric import NumericModel
+from app.inference.quant_model import QuantHorizonModel
 from app.infrastructure.artifacts import ArtifactStore
 
 
 @dataclass(frozen=True)
 class PinnedBundle:
     bundle: ActiveModelBundle
-    models: dict[int, NumericModel]
+    models: dict[int, NumericModel | QuantHorizonModel]
 
 
 class BundleRegistry:
@@ -36,10 +38,10 @@ class BundleRegistry:
     def register(
         self,
         bundle: ActiveModelBundle,
-        models: Mapping[int, NumericModel] | None = None,
+        models: Mapping[int, NumericModel | QuantHorizonModel] | None = None,
     ) -> PinnedBundle:
         """Yeni bir model paketini immutable olarak kaydeder."""
-        loaded_models: dict[int, NumericModel] = {}
+        loaded_models: dict[int, NumericModel | QuantHorizonModel] = {}
 
         if models is not None:
             loaded_models = dict(models)
@@ -50,7 +52,11 @@ class BundleRegistry:
                 artifact_hash = bundle.artifactHashes.get(h_key) or bundle.artifactHashes.get("numeric")
                 if artifact_hash:
                     raw = self.artifact_store.read(artifact_hash)
-                    loaded_models[h] = NumericModel(raw, expected_hash=artifact_hash)
+                    fmt = json.loads(raw).get("format")
+                    if fmt in ("quant-horizon-v3", "quant-horizon-v4"):
+                        loaded_models[h] = QuantHorizonModel(raw, expected_hash=artifact_hash)
+                    else:
+                        loaded_models[h] = NumericModel(raw, expected_hash=artifact_hash)
 
         pinned = PinnedBundle(bundle=bundle, models=loaded_models)
         self._bundles[bundle.bundleId] = pinned

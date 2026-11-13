@@ -13,7 +13,7 @@ import java.net.URI;
 import java.time.Clock;
 
 @Configuration
-@Profile("model-http & !fixture")
+@Profile("!fixture & !test")
 public class ModelClientConfig {
 
     @Bean

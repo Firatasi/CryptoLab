@@ -82,4 +82,6 @@ public interface IdentityRepository {
     List<String> roles(UUID user);
 
     List<String> authorities(UUID user);
+
+    void touchLastSeen(UUID userId, Instant now);
 }

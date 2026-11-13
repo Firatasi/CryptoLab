@@ -41,7 +41,7 @@ public class AiPreviewService {
         this.clock = clock;
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = BusinessException.class)
     public ExecutionPlan previewAiProposal(
             UUID ownerId,
             AiPreviewRequest request,

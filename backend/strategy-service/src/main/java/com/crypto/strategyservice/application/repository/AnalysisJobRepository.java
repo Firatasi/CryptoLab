@@ -18,8 +18,20 @@ public interface AnalysisJobRepository {
             UUID instrumentId,
             int horizonSeconds,
             Instant asOf,
-            UUID workerToken
+            UUID workerToken,
+            String riskLevel
     ) {
+        public ClaimedJob(
+                UUID id,
+                UUID ownerId,
+                UUID sessionId,
+                UUID instrumentId,
+                int horizonSeconds,
+                Instant asOf,
+                UUID workerToken
+        ) {
+            this(id, ownerId, sessionId, instrumentId, horizonSeconds, asOf, workerToken, null);
+        }
     }
 
     record PinnedContext(
@@ -153,6 +165,19 @@ public interface AnalysisJobRepository {
             Instant now
     );
 
+    default UUID enqueueIdempotent(
+            UUID ownerId,
+            UUID sessionId,
+            UUID instrumentId,
+            int horizonSeconds,
+            Instant asOf,
+            String idempotencyKey,
+            Instant now,
+            String riskLevel
+    ) {
+        return enqueueIdempotent(ownerId, sessionId, instrumentId, horizonSeconds, asOf, idempotencyKey, now);
+    }
+
     Optional<ClaimedJob> claimNext(
             UUID workerToken,
             Instant now,
@@ -193,6 +218,17 @@ public interface AnalysisJobRepository {
             String policyReason,
             Instant now
     );
+
+    default boolean completePolicyWait(
+            UUID jobId,
+            UUID workerToken,
+            PredictionResult prediction,
+            String policyReason,
+            String explanationText,
+            Instant now
+    ) {
+        return completePolicyWait(jobId, workerToken, prediction, policyReason, now);
+    }
 
     BackfillTicket registerSingleFlightBackfill(
             UUID instrumentId,

@@ -34,6 +34,20 @@ public final class ExecutionGate {
         }
     }
 
+    public static void stopBeforeLiquidation(String side, BigDecimal stop, BigDecimal estimatedLiquidation) {
+        if (stop == null || estimatedLiquidation == null) {
+            return;
+        }
+        boolean longSide = "LONG".equals(side);
+        if (!longSide && !"SHORT".equals(side)) {
+            throw new IllegalArgumentException("INVALID_SIDE");
+        }
+        // Tasfiye (likidasyon) aynı adımda SL'den önce tetiklenir; SL tasfiye fiyatını aşamaz.
+        if (longSide ? stop.compareTo(estimatedLiquidation) <= 0 : stop.compareTo(estimatedLiquidation) >= 0) {
+            throw new IllegalArgumentException("STOP_LOSS_PAST_LIQUIDATION");
+        }
+    }
+
     public static void approved(ExecutionPlan p, Instant now, long generation, BigDecimal fill, BigDecimal fee) {
         if (!now.isBefore(p.validUntil())) {
             throw new IllegalStateException("PLAN_EXPIRED");

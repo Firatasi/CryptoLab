@@ -1,0 +1,253 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-black: #000;
+  --color-white: #fff;
+  --spacing: .25rem;
+  --container-xs: 20rem;
+  --container-sm: 24rem;
+  --container-md: 28rem;
+  --container-lg: 32rem;
+  --container-2xl: 42rem;
+  --container-3xl: 48rem;
+  --container-4xl: 56rem;
+  --container-5xl: 64rem;
+  --text-xs: .75rem;
+  --text-xs--line-height: calc(1/.75);
+  --text-sm: .875rem;
+  --text-sm--line-height: calc(1.25/.875);
+  --text-base: 1rem;
+  --text-base--line-height: calc(1.5/1);
+  --text-lg: 1.125rem;
+  --text-lg--line-height: calc(1.75/1.125);
+  --text-xl: 1.25rem;
+  --text-xl--line-height: calc(1.75/1.25);
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: calc(2/1.5);
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: calc(2.25/1.875);
+  --text-4xl: 2.25rem;
+  --text-4xl--line-height: calc(2.5/2.25);
+  --text-5xl: 3rem;
+  --text-5xl--line-height: 1;
+  --text-7xl: 4.5rem;
+  --text-7xl--line-height: 1;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --tracking-tighter: -.05em;
+  --tracking-tight: -.025em;
+  --tracking-widest: .1em;
+  --leading-tight: 1.25;
+  --leading-snug: 1.375;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+  --radius-xs: .125rem;
+  --radius-2xl: 1rem;
+  --ease-out: cubic-bezier(0,0,.2,1);
+  --ease-in-out: cubic-bezier(.4,0,.2,1);
+  --animate-spin: spin 1s linear infinite;
+  --animate-pulse: pulse 2s cubic-bezier(.4,0,.6,1) infinite;
+  --blur-md: 12px;
+  --aspect-video: 16/9;
+  --default-transition-duration: .15s;
+  --default-transition-timing-function: cubic-bezier(.4,0,.2,1);
+  --default-font-family: "Inter","Inter Fallback",system-ui,sans-serif;
+  --default-mono-font-family: "JetBrains Mono",monospace;
+  --color-border: var(--border);
+  --color-red-50: lab(96.5005% 4.18508 1.52328);
+  --color-red-300: lab(76.5514% 36.422 15.5335);
+  --color-red-400: lab(63.7053% 60.745 31.3109);
+  --color-red-600: lab(48.4493% 77.4328 61.5452);
+  --background: #fff;
+  --foreground: #0a0a0a;
+  --card: #fff;
+  --card-foreground: #0a0a0a;
+  --popover: #fff;
+  --popover-foreground: #0a0a0a;
+  --primary: #0a0a0a;
+  --primary-foreground: #fff;
+  --secondary: #f5f5f5;
+  --secondary-foreground: #0a0a0a;
+  --muted: #f5f5f5;
+  --muted-foreground: #737373;
+  --accent: #0a0a0a;
+  --accent-foreground: #fff;
+  --destructive: #dc2626;
+  --destructive-foreground: #fff;
+  --border: #e5e5e5;
+  --input: #f5f5f5;
+  --ring: #0a0a0a;
+  --chart-1: #0a0a0a;
+  --chart-2: #525252;
+  --chart-3: #737373;
+  --chart-4: #a3a3a3;
+  --chart-5: #d4d4d4;
+  --radius: 0rem;
+  --sidebar: #0a0a0a;
+  --sidebar-foreground: #fff;
+  --sidebar-primary: #fff;
+  --sidebar-primary-foreground: #0a0a0a;
+  --sidebar-accent: #262626;
+  --sidebar-accent-foreground: #fff;
+  --sidebar-border: #262626;
+  --sidebar-ring: #fff;
+  --font-inter: "Inter","Inter Fallback";
+  --font-handwriting: "Dancing Script", "Caveat", cursive;
+
+  /* Uyumluluk değişkenleri */
+  --bg-canvas: var(--background);
+  --bg-surface: var(--card);
+  --bg-elevated: var(--secondary);
+  --border-subtle: var(--border);
+  --border-strong: #d4d4d4;
+  --text-primary: var(--foreground);
+  --text-secondary: #525252;
+  --text-muted: var(--muted-foreground);
+  --accent-primary: var(--primary);
+  --accent-paper: var(--primary);
+  --color-long: #0a0a0a;
+  --color-short: var(--destructive);
+  --color-wait: #525252;
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    border: 0 solid;
+    border-color: var(--border);
+    outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
+  }
+
+  html {
+    color-scheme: light;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+    line-height: 1.5;
+    font-feature-settings: var(--default-font-feature-settings, normal);
+    font-variation-settings: var(--default-font-variation-settings, normal);
+    -webkit-tap-highlight-color: transparent;
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--default-font-family);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: Inter, "Inter Fallback", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Minimalist architectural scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--chart-4);
+  border-radius: 0rem;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--chart-2);
+}
+
+/* El yazısı (Handwriting) SVG çizim ve mürekkep dolum animasyonları */
+@keyframes handwriting-stroke {
+  0% {
+    stroke-dashoffset: 1400;
+    fill: rgba(255, 255, 255, 0);
+  }
+  68% {
+    stroke-dashoffset: 0;
+    fill: rgba(255, 255, 255, 0.12);
+  }
+  100% {
+    stroke-dashoffset: 0;
+    fill: rgba(255, 255, 255, 1);
+  }
+}
+
+@keyframes signature-flourish {
+  0% {
+    stroke-dashoffset: 900;
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0.92;
+  }
+}
+
+@keyframes letter-write-in {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) rotate(-6deg) scale(0.88);
+    filter: blur(4px);
+  }
+  65% {
+    opacity: 1;
+    transform: translateY(-3px) rotate(1.5deg) scale(1.03);
+    filter: blur(0px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) rotate(0deg) scale(1);
+    filter: blur(0px);
+  }
+}
+
+.animate-handwriting-stroke {
+  stroke-dasharray: 1400;
+  stroke-dashoffset: 1400;
+  animation: handwriting-stroke 2.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-signature-flourish {
+  stroke-dasharray: 900;
+  stroke-dashoffset: 900;
+  animation: signature-flourish 1.4s cubic-bezier(0.22, 1, 0.36, 1) 1.5s forwards;
+}
+
+.animate-letter-write {
+  opacity: 0;
+  animation: letter-write-in 0.65s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

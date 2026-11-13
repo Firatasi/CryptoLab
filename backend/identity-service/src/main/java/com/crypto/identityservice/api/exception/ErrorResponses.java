@@ -39,8 +39,14 @@ public final class ErrorResponses {
                     "Kayıt bulunamadı.";
             case "INVALID_REQUEST" ->
                     "İstek bilgileri geçersiz.";
+            case "CAPTCHA_INVALID" ->
+                    "Güvenlik doğrulama kodu (CAPTCHA) hatalı.";
+            case "CAPTCHA_EXPIRED" ->
+                    "Güvenlik doğrulama kodunun süresi doldu; lütfen kodu yenileyin.";
             case "UNSUPPORTED_MEDIA_TYPE" ->
                     "İstek application/json olmalı.";
+            case "METHOD_NOT_ALLOWED" ->
+                    "Bu HTTP yöntemi desteklenmiyor.";
             default ->
                     "İstek tamamlanamadı.";
         };

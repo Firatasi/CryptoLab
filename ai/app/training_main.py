@@ -12,6 +12,11 @@ from app.infrastructure.source_repository import SourceRepository
 
 ARTIFACTS_DIR = os.getenv("ARTIFACTS_DIR", str(Path(__file__).resolve().parent.parent / "artifacts"))
 TRAINING_SECRET = os.getenv("TRAINING_SERVICE_SECRET", "cryptolab-secret-training")
+_APP_ENV = (os.getenv("APP_ENV") or os.getenv("ENV") or "development").strip().lower()
+if _APP_ENV in ("prod", "production") and (
+    len(TRAINING_SECRET) < 32 or TRAINING_SECRET == "cryptolab-secret-training"
+):
+    raise RuntimeError("PROD_SECURITY_CONFIG: Weak or default TRAINING_SERVICE_SECRET in production")
 
 artifact_store = ArtifactStore(ARTIFACTS_DIR)
 source_repo = SourceRepository()

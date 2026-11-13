@@ -9,9 +9,16 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import com.crypto.simulationservice.api.dto.response.ApiError;
 import com.crypto.simulationservice.domain.exception.BusinessException;
@@ -40,6 +47,35 @@ public class ApiErrors {
         return response(400, "INVALID_JSON", false);
     }
 
+    @ExceptionHandler({
+            MethodArgumentTypeMismatchException.class,
+            MissingRequestHeaderException.class,
+            MissingServletRequestParameterException.class
+    })
+    public ResponseEntity<ApiError> badParameters() {
+        return response(400, "INVALID_REQUEST", false);
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiError> notFound() {
+        return response(404, "NOT_FOUND", false);
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ApiError> unsupportedMedia() {
+        return response(415, "UNSUPPORTED_MEDIA_TYPE", false);
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiError> methodNotAllowed() {
+        return response(405, "METHOD_NOT_ALLOWED", false);
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiError> maxUploadSize() {
+        return response(413, "PAYLOAD_TOO_LARGE", false);
+    }
+
     @ExceptionHandler(DuplicateKeyException.class)
     public ResponseEntity<ApiError> duplicate() {
         return response(409, "CONFLICT", false);
@@ -57,7 +93,8 @@ public class ApiErrors {
         if (code != null && Set.of("INVALID_KEY", "INVALID_SUBMIT", "INVALID_DECIMAL", "DECIMAL_OUT_OF_RANGE",
                 "POSITIVE_REQUIRED", "NON_NEGATIVE_REQUIRED", "INVALID_LEVERAGE", "INVALID_HORIZON",
                 "INVALID_EXPIRY_POLICY", "INVALID_ORDER_TYPE", "INVALID_TTL", "INVALID_TICK",
-                "MIN_NOTIONAL", "LIMIT_PRICE_REQUIRED_OR_FORBIDDEN", "INVALID_APPROVAL_BOUNDS").contains(code)) {
+                "MIN_NOTIONAL", "LIMIT_PRICE_REQUIRED_OR_FORBIDDEN", "INVALID_APPROVAL_BOUNDS",
+                "INVALID_STOP", "INVALID_TARGET", "STOP_LOSS_PAST_LIQUIDATION", "BRACKET_REQUIRED", "INVALID_SIDE").contains(code)) {
             return response(400, code, false);
         }
         return unexpected(exception); // Programlama hatasını sahte 400 ile gizlemeyiz.
@@ -71,6 +108,11 @@ public class ApiErrors {
     @ExceptionHandler(org.springframework.security.core.AuthenticationException.class)
     public ResponseEntity<ApiError> unauthenticated() {
         return response(401, "UNAUTHORIZED", false);
+    }
+
+    @ExceptionHandler(org.springframework.web.context.request.async.AsyncRequestTimeoutException.class)
+    public ResponseEntity<Void> sseTimeout() {
+        return ResponseEntity.noContent().build();
     }
 
     @ExceptionHandler(Exception.class)

@@ -3,6 +3,7 @@ package com.crypto.strategyservice;
 import com.crypto.strategyservice.application.port.ModelClient;
 import com.crypto.strategyservice.application.service.AnalysisFlow;
 import com.crypto.strategyservice.domain.model.PredictionResult;
+import com.crypto.strategyservice.domain.service.AdaptiveNumericPolicy;
 import com.crypto.strategyservice.domain.service.NumericPolicy;
 import com.crypto.strategyservice.infrastructure.client.fixture.FakeModelClient;
 import org.junit.jupiter.api.Test;
@@ -348,5 +349,180 @@ class StrategyFlowTest {
     ) {
         assertNotNull(actual);
         assertEquals(0, new BigDecimal(expected).compareTo(actual));
+    }
+
+    @Test
+    void adaptivePolicyProducesDynamicAssetHorizonAndRiskSpecificLeverageWithinSafetyCaps() {
+        PredictionResult btc1h = new PredictionResult(
+                REQUEST_ID,
+                PredictionResult.Quality.READY,
+                List.of("QUANT_MODEL_V3", "HTF_TREND_CONFIRMED", "VOLUME_CONFIRMED"),
+                BUNDLE_ID,
+                "features-quant-v3",
+                SCHEMA_HASH,
+                SNAPSHOT_ID,
+                AS_OF,
+                3600,
+                0.012,
+                0.0085,
+                "walkforward-ridge-quant-v3-h3600",
+                Map.of(
+                        "signalConfidence", 0.78,
+                        "efficiencyRatio", 0.62,
+                        "volRegimeRatio", 1.05,
+                        "regime", "TREND_UP"
+                ),
+                3
+        );
+
+        var low = AdaptiveNumericPolicy.evaluateAdaptive(
+                btc1h, null, new BigDecimal("90000"), new BigDecimal("520"), 1.0, 0.0012, "LOW", 50, 125
+        );
+        var med = AdaptiveNumericPolicy.evaluateAdaptive(
+                btc1h, null, new BigDecimal("90000"), new BigDecimal("520"), 1.0, 0.0012, "MEDIUM", 50, 125
+        );
+        var high = AdaptiveNumericPolicy.evaluateAdaptive(
+                btc1h, null, new BigDecimal("90000"), new BigDecimal("520"), 1.0, 0.0012, "HIGH", 50, 125
+        );
+
+        assertEquals("LONG", low.action());
+        assertEquals("LONG", med.action());
+        assertEquals("LONG", high.action());
+        assertTrue(low.suggestedLeverage().compareTo(BigDecimal.ONE) >= 0);
+        assertTrue(med.suggestedLeverage().compareTo(low.suggestedLeverage()) > 0);
+        assertTrue(high.suggestedLeverage().compareTo(med.suggestedLeverage()) > 0);
+        assertTrue(med.suggestedLeverage().compareTo(new BigDecimal("2")) > 0);
+        assertTrue(high.suggestedLeverage().compareTo(new BigDecimal("50")) <= 0);
+        assertTrue(high.stopLoss().compareTo(new BigDecimal("90000")) < 0);
+        assertTrue(high.takeProfit().compareTo(new BigDecimal("90000")) > 0);
+
+        // Session cap (5x Muhafazakar Koruma) MUST never be violated even when HIGH selected
+        var cappedSession = AdaptiveNumericPolicy.evaluateAdaptive(
+                btc1h, null, new BigDecimal("90000"), new BigDecimal("520"), 1.0, 0.0012, "HIGH", 5, 125
+        );
+        assertEquals(0, new BigDecimal("5").compareTo(cappedSession.suggestedLeverage()));
+
+        // High-ATR volatile altcoin on weekly horizon MUST lower leverage well below session cap so SL precedes liquidation
+        PredictionResult doge1w = new PredictionResult(
+                REQUEST_ID,
+                PredictionResult.Quality.READY,
+                List.of("QUANT_MODEL_V3", "HTF_TREND_CONFIRMED"),
+                BUNDLE_ID,
+                "features-quant-v3",
+                SCHEMA_HASH,
+                SNAPSHOT_ID,
+                AS_OF,
+                604800,
+                0.06,
+                0.055,
+                "walkforward-ridge-quant-v3-h604800",
+                Map.of(
+                        "signalConfidence", 0.72,
+                        "efficiencyRatio", 0.45,
+                        "volRegimeRatio", 1.25,
+                        "regime", "TREND_UP"
+                ),
+                4
+        );
+        var dogeHigh = AdaptiveNumericPolicy.evaluateAdaptive(
+                doge1w, null, new BigDecimal("0.38000"), new BigDecimal("0.01500"), 1.0, 0.0012, "HIGH", 50, 50
+        );
+        assertEquals("LONG", dogeHigh.action());
+        assertTrue(dogeHigh.suggestedLeverage().compareTo(high.suggestedLeverage()) < 0);
+        // SL distance is ~5.5%+; isolated liquidation distance (1/lev) must remain comfortably wider than SL distance
+        double slPct = new BigDecimal("0.38000").subtract(dogeHigh.stopLoss()).doubleValue() / 0.38;
+        assertTrue(1.0 / dogeHigh.suggestedLeverage().doubleValue() > slPct);
+
+        // Choppy regime enters WAIT on LOW / MEDIUM cleanly
+        PredictionResult choppy = new PredictionResult(
+                REQUEST_ID,
+                PredictionResult.Quality.READY,
+                List.of("QUANT_MODEL_V3", "CHOPPY_REGIME"),
+                BUNDLE_ID,
+                "features-quant-v3",
+                SCHEMA_HASH,
+                SNAPSHOT_ID,
+                AS_OF,
+                900,
+                0.005,
+                0.004,
+                "walkforward-ridge-quant-v3-h900",
+                Map.of("signalConfidence", 0.54, "regime", "CHOPPY"),
+                2
+        );
+        var choppyWait = AdaptiveNumericPolicy.evaluateAdaptive(
+                choppy, null, new BigDecimal("90000"), new BigDecimal("350"), 1.0, 0.0012, "MEDIUM", 20, 125
+        );
+        assertEquals("WAIT", choppyWait.action());
+        assertNull(choppyWait.suggestedLeverage());
+
+        // HIGH ("Yüksek - Maks. Kâr") yields an actionable directional setup even on mild chop or tight 1m edge
+        var choppyHigh = AdaptiveNumericPolicy.evaluateAdaptive(
+                choppy, null, new BigDecimal("90000"), new BigDecimal("350"), 1.0, 0.0012, "HIGH", 50, 125
+        );
+        assertEquals("LONG", choppyHigh.action());
+        assertNotNull(choppyHigh.suggestedLeverage());
+        assertTrue(choppyHigh.suggestedLeverage().compareTo(BigDecimal.ONE) >= 1);
+
+        PredictionResult btc1m = new PredictionResult(
+                REQUEST_ID,
+                PredictionResult.Quality.READY,
+                List.of("QUANT_MODEL_V3", "CHOPPY_REGIME", "LOW_CONFIDENCE"),
+                BUNDLE_ID,
+                "features-quant-v3",
+                SCHEMA_HASH,
+                SNAPSHOT_ID,
+                AS_OF,
+                60,
+                -0.0010,
+                0.0009,
+                "walkforward-ridge-quant-v3-h60",
+                Map.of("signalConfidence", 0.42, "efficiencyRatio", 0.16, "atrPct", 0.0011, "rsi14", 44.2, "regime", "CHOPPY"),
+                2
+        );
+        var btc1mHigh = AdaptiveNumericPolicy.evaluateAdaptive(
+                btc1m, null, new BigDecimal("90000"), new BigDecimal("95"), 1.0, 0.0010, "HIGH", 50, 125
+        );
+        assertEquals("SHORT", btc1mHigh.action());
+        assertNotNull(btc1mHigh.suggestedLeverage());
+
+        String waitSummary = AdaptiveNumericPolicy.buildWaitSummary(
+                btc1m, "CHOPPY_MARKET_WAIT", 60, new BigDecimal("90000"), new BigDecimal("95"), "MEDIUM"
+        );
+        assertTrue(waitSummary.contains("Düşüş (SHORT) Eğilimi"));
+        assertTrue(waitSummary.contains("Yüksek (Maks. Kâr)"));
+        assertFalse(waitSummary.contains("CHOPPY_MARKET_WAIT"));
+        assertFalse(waitSummary.contains("QUANT_MODEL_V3"));
+
+        // features-quant-v4 GBDT + Triple-Barrier predictions cleanly evaluate through AdaptiveNumericPolicy
+        PredictionResult ethV4 = new PredictionResult(
+                REQUEST_ID,
+                PredictionResult.Quality.READY,
+                List.of("QUANT_MODEL_V4", "ORDER_FLOW_CONFIRMED", "LIQUIDITY_SWEEP_ALIGNED", "HTF_TREND_CONFIRMED"),
+                BUNDLE_ID,
+                "features-quant-v4",
+                SCHEMA_HASH,
+                SNAPSHOT_ID,
+                AS_OF,
+                3600,
+                0.015,
+                0.009,
+                "walkforward-gbdt-triple-barrier-v4-h3600",
+                Map.of(
+                        "signalConfidence", 0.74,
+                        "winProbabilityEstimate", 0.54,
+                        "efficiencyRatio", 0.58,
+                        "volRegimeRatio", 1.12,
+                        "regime", "TREND_UP"
+                ),
+                3
+        );
+        var v4Med = AdaptiveNumericPolicy.evaluateAdaptive(
+                ethV4, null, new BigDecimal("3400"), new BigDecimal("26"), 1.0, 0.0012, "MEDIUM", 20, 100
+        );
+        assertEquals("LONG", v4Med.action());
+        assertEquals("QUANT_ADAPTIVE_POLICY", v4Med.reason());
+        assertTrue(v4Med.suggestedLeverage().compareTo(BigDecimal.ONE) > 0);
+        assertTrue(v4Med.suggestedLeverage().compareTo(new BigDecimal("20")) <= 0);
     }
 }
