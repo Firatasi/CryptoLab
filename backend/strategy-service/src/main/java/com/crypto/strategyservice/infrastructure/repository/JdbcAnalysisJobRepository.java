@@ -47,6 +47,20 @@ public class JdbcAnalysisJobRepository implements AnalysisJobRepository {
             Instant asOf,
             Instant now
     ) {
+        createQueued(id, ownerId, sessionId, instrumentId, horizonSeconds, asOf, now, "AUTO");
+    }
+
+    private void createQueued(
+            UUID id,
+            UUID ownerId,
+            UUID sessionId,
+            UUID instrumentId,
+            int horizonSeconds,
+            Instant asOf,
+            Instant now,
+            String riskLevel
+    ) {
+        String effectiveRisk = (riskLevel == null || riskLevel.isBlank()) ? "AUTO" : riskLevel;
         jdbc.update("""
                 INSERT INTO analysis_jobs (
                     id,
@@ -55,11 +69,12 @@ public class JdbcAnalysisJobRepository implements AnalysisJobRepository {
                     instrument_id,
                     horizon_seconds,
                     as_of,
+                    risk_level,
                     status,
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'QUEUED', ?, ?)
                 """,
                 id,
                 ownerId,
@@ -67,6 +82,7 @@ public class JdbcAnalysisJobRepository implements AnalysisJobRepository {
                 instrumentId,
                 horizonSeconds,
                 Timestamp.from(asOf),
+                effectiveRisk,
                 Timestamp.from(now),
                 Timestamp.from(now)
         );
@@ -82,12 +98,29 @@ public class JdbcAnalysisJobRepository implements AnalysisJobRepository {
             String idempotencyKey,
             Instant now
     ) {
+        return enqueueIdempotent(ownerId, sessionId, instrumentId, horizonSeconds, asOf, idempotencyKey, now, null);
+    }
+
+    @Override
+    public UUID enqueueIdempotent(
+            UUID ownerId,
+            UUID sessionId,
+            UUID instrumentId,
+            int horizonSeconds,
+            Instant asOf,
+            String idempotencyKey,
+            Instant now,
+            String riskLevel
+    ) {
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 128) {
             throw new IllegalArgumentException("INVALID_IDEMPOTENCY_KEY");
         }
+        String effectiveRisk = (riskLevel == null || riskLevel.isBlank()) ? "AUTO" : riskLevel;
         String route = "POST /api/v1/strategy/analyses";
         String scope = sessionId.toString();
-        String requestHash = sha256(sessionId + ":" + instrumentId + ":" + horizonSeconds + ":" + asOf);
+        String requestHash = "AUTO".equals(effectiveRisk)
+                ? sha256(sessionId + ":" + instrumentId + ":" + horizonSeconds + ":" + asOf)
+                : sha256(sessionId + ":" + instrumentId + ":" + horizonSeconds + ":" + asOf + ":" + effectiveRisk);
 
         var existing = jdbc.query("""
                 SELECT request_hash, result_ref
@@ -109,7 +142,7 @@ public class JdbcAnalysisJobRepository implements AnalysisJobRepository {
         }
 
         UUID jobId = UUID.randomUUID();
-        createQueued(jobId, ownerId, sessionId, instrumentId, horizonSeconds, asOf, now);
+        createQueued(jobId, ownerId, sessionId, instrumentId, horizonSeconds, asOf, now, effectiveRisk);
 
         String payload = json.writeValueAsString(Map.of(
                 "analysisId", jobId.toString(),
@@ -117,7 +150,8 @@ public class JdbcAnalysisJobRepository implements AnalysisJobRepository {
                 "sessionId", sessionId.toString(),
                 "instrumentId", instrumentId.toString(),
                 "horizonSeconds", horizonSeconds,
-                "asOf", asOf.toString()
+                "asOf", asOf.toString(),
+                "riskLevel", effectiveRisk
         ));
 
         jdbc.update("""
@@ -184,7 +218,8 @@ public class JdbcAnalysisJobRepository implements AnalysisJobRepository {
                     job.instrument_id,
                     job.horizon_seconds,
                     job.as_of,
-                    job.worker_token
+                    job.worker_token,
+                    job.risk_level
                 """,
                 (rs, rowNum) -> new ClaimedJob(
                         rs.getObject("id", UUID.class),
@@ -193,7 +228,8 @@ public class JdbcAnalysisJobRepository implements AnalysisJobRepository {
                         rs.getObject("instrument_id", UUID.class),
                         rs.getInt("horizon_seconds"),
                         rs.getTimestamp("as_of").toInstant(),
-                        rs.getObject("worker_token", UUID.class)
+                        rs.getObject("worker_token", UUID.class),
+                        rs.getString("risk_level")
                 ),
                 Timestamp.from(now),
                 workerToken,
@@ -364,6 +400,18 @@ public class JdbcAnalysisJobRepository implements AnalysisJobRepository {
             String policyReason,
             Instant now
     ) {
+        return completePolicyWait(jobId, workerToken, prediction, policyReason, null, now);
+    }
+
+    @Override
+    public boolean completePolicyWait(
+            UUID jobId,
+            UUID workerToken,
+            PredictionResult prediction,
+            String policyReason,
+            String explanationText,
+            Instant now
+    ) {
         if (prediction.quality() != PredictionResult.Quality.READY
                 || !jobId.equals(prediction.requestId())
                 || policyReason == null || policyReason.isBlank()) {
@@ -383,6 +431,7 @@ public class JdbcAnalysisJobRepository implements AnalysisJobRepository {
                 reason_codes = CAST(? AS jsonb),
                 feature_snapshot_id = ?,
                 explanation_status = 'NOT_APPLICABLE',
+                explanation = ?,
                 worker_token = NULL,
                 lease_until = NULL,
                 updated_at = ?
@@ -398,6 +447,7 @@ public class JdbcAnalysisJobRepository implements AnalysisJobRepository {
             """,
                 json.writeValueAsString(combinedReasons),
                 prediction.featureSnapshotId(),
+                explanationText,
                 Timestamp.from(now),
                 jobId,
                 workerToken,

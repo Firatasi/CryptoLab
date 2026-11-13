@@ -68,13 +68,15 @@ public final class PreviewFactory {
             throw new IllegalArgumentException("MIN_NOTIONAL");
         }
         ExecutionGate.bracket(r.side(), reference, r.stop(), r.target(), c.requireStop(), c.requireTarget());
+        BigDecimal estimatedLiquidation = Finance.liquidation(side, open.quantity(), reference, open.margin(), rule.tiers()).orElse(null);
+        ExecutionGate.stopBeforeLiquidation(r.side(), r.stop(), estimatedLiquidation);
         if (c.lower().signum() <= 0 || c.lower().compareTo(reference) > 0 || c.upper().compareTo(reference) < 0 || c.maxFee().compareTo(open.fee()) < 0) {
             throw new IllegalArgumentException("INVALID_APPROVAL_BOUNDS");
         }
         return new ExecutionPlan(UUID.randomUUID(), 1, null, r.session(), r.instrument(), r.instrumentVersion(), source, proposalId, r.generation(),
                 r.side(), r.orderType(), open.quantity(), reference, r.limit(), open.margin(), open.fee(), open.notional(), r.leverage(), r.stop(), r.target(),
                 r.horizon(), r.expiryPolicy(), c.lower(), c.upper(), c.maxFee(), c.slipBps(), rule.id(), c.riskVersion(), now, now.plusSeconds(c.ttlSeconds()),
-                Finance.liquidation(side, open.quantity(), reference, open.margin(), rule.tiers()).orElse(null), List.of());
+                estimatedLiquidation, List.of());
     }
 
     public static ExecutionPlan createFromAiProposal(

@@ -25,10 +25,13 @@ public final class ErrorResponses {
         return switch (code) {
             case "UNAUTHORIZED" -> "Kimlik doğrulaması gerekli.";
             case "FORBIDDEN" -> "Bu işlem için izin yok.";
-            case "PAYLOAD_TOO_LARGE" -> "Yüklenen içerik boyut sınırını aşıyor.";
+            case "PAYLOAD_TOO_LARGE", "UPLOAD_SIZE" -> "Yüklenen içerik boyut sınırını aşıyor.";
             case "CONFLICT", "IDEMPOTENCY_CONFLICT", "ALIAS_VERSION_CONFLICT" -> "İstek mevcut durumla çakışıyor.";
             case "TRAINING_UNAVAILABLE" -> "Eğitim servisi şu anda kullanılamıyor.";
             case "NOT_FOUND" -> "Kayıt bulunamadı.";
+            case "UNSUPPORTED_MEDIA_TYPE" -> "Desteklenmeyen içerik türü.";
+            case "METHOD_NOT_ALLOWED" -> "Bu HTTP yöntemi desteklenmiyor.";
+            case "INTERNAL_ERROR" -> "İşlem tamamlanamadı.";
             default -> "İstek bilgileri geçersiz.";
         };
     }

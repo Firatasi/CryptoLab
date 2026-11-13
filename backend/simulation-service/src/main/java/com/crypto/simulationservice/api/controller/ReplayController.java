@@ -158,7 +158,10 @@ public class ReplayController {
         UUID ownerId = UUID.fromString(jwt.getSubject());
         String csv = replayService.exportCsv(ownerId, replayId);
         return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType("text/csv"))
+                .header("Content-Disposition", "attachment; filename=\"replay-" + replayId + ".csv\"")
+                .header("X-Content-Type-Options", "nosniff")
+                .header("Cache-Control", "no-store")
+                .contentType(MediaType.parseMediaType("text/csv;charset=UTF-8"))
                 .body(csv);
     }
 }

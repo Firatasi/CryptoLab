@@ -23,6 +23,7 @@ class CachedPrediction:
     as_of: datetime
     observed_feature_summary: dict
     created_at: datetime
+    calibration_version: str | None = None
 
 
 class PredictionCache:
@@ -71,6 +72,7 @@ class PredictionCache:
         predicted_log_return: float | None,
         volatility_estimate: float | None,
         observed_feature_summary: dict,
+        calibration_version: str | None = None,
     ) -> None:
         key = self.make_key(bundle_id, snapshot_id, horizon)
         cached = CachedPrediction(
@@ -81,6 +83,7 @@ class PredictionCache:
             as_of=as_of,
             observed_feature_summary=observed_feature_summary,
             created_at=datetime.now(timezone.utc),
+            calibration_version=calibration_version,
         )
         with self._lock:
             if len(self._cache) >= self.max_size:

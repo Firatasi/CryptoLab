@@ -103,6 +103,9 @@ class ModelService:
         pinned = self.registry.get(request.modelBundleId)
         bundle = pinned.bundle
 
+        if bundle.featureVersion in ("features-quant-v3", "features-quant-v4"):
+            return self._predict_quant(request, pinned, start)
+
         if (
             request.featureVersion != bundle.featureVersion
             or bundle.featureSchemaHash != SCHEMA_HASH
@@ -198,5 +201,145 @@ class ModelService:
             volatilityEstimate=None if scores is None else scores[1],
             calibrationVersion=None,
             observedFeatureSummary=f.summary,
+            latencyMs=latency_ms,
+        )
+
+    def _predict_quant(self, request: PredictionRequest, pinned: Any, start: float) -> PredictionResult:
+        from app.features.quant import (
+            QUANT_FEATURE_VERSION,
+            QUANT_FEATURE_VERSION_V3,
+            QUANT_SCHEMA_HASH,
+            QUANT_SCHEMA_HASH_V3,
+            build_quant_features,
+        )
+
+        bundle = pinned.bundle
+        expected_schema = (
+            QUANT_SCHEMA_HASH_V3
+            if bundle.featureVersion == QUANT_FEATURE_VERSION_V3
+            else QUANT_SCHEMA_HASH
+        )
+        if (
+            bundle.featureVersion not in (QUANT_FEATURE_VERSION, QUANT_FEATURE_VERSION_V3)
+            or request.featureVersion != bundle.featureVersion
+            or bundle.featureSchemaHash != expected_schema
+        ):
+            raise ValueError("FEATURE_SCHEMA_MISMATCH")
+
+        if request.horizonSeconds not in bundle.supportedHorizons:
+            raise ValueError("UNSUPPORTED_HORIZON")
+
+        if hasattr(self.datasets, "read_quant_inputs"):
+            q_in = self.datasets.read_quant_inputs(
+                request.instrumentId,
+                request.horizonSeconds,
+            )
+            primary_bars = q_in["primary_bars"]
+            context_bars = q_in.get("context_bars", [])
+            funding_rate = float(q_in.get("funding_rate", 0.0))
+            content_hash = str(q_in["content_hash"])
+            symbol = str(q_in.get("symbol", ""))
+        else:
+            res = self.datasets.read(
+                request.marketDatasetId,
+                request.marketSnapshotId,
+                request.instrumentId,
+            )
+            if isinstance(res, tuple):
+                primary_bars, content_hash = res
+            else:
+                primary_bars = res
+                content_hash = self.datasets.dataset_hash(request.marketDatasetId)
+            context_bars = []
+            funding_rate = 0.0
+            symbol = ""
+
+        f = build_quant_features(
+            primary_bars,
+            request.instrumentId,
+            request.horizonSeconds,
+            request.asOf,
+            content_hash,
+            context_bars=context_bars,
+            funding_rate=funding_rate,
+            feature_version=bundle.featureVersion,
+        )
+
+        summary = dict(f.summary)
+        if symbol:
+            summary["symbol"] = symbol
+
+        quality = f.quality
+        reasons = list(f.reason_codes)
+        pred_return: float | None = None
+        pred_vol: float | None = None
+        cal_version: str | None = None
+
+        if quality == "READY":
+            if self.cache is not None:
+                cached = self.cache.get(
+                    bundle.bundleId, f.id, request.horizonSeconds, request.asOf
+                )
+                if cached is not None:
+                    return PredictionResult(
+                        requestId=request.requestId,
+                        quality=cached.quality,  # type: ignore[arg-type]
+                        reasonCodes=cached.reason_codes,
+                        modelBundleId=bundle.bundleId,
+                        featureVersion=bundle.featureVersion,
+                        featureSchemaHash=bundle.featureSchemaHash,
+                        featureSnapshotId=f.id,
+                        asOf=request.asOf,
+                        horizonSeconds=request.horizonSeconds,
+                        predictedLogReturn=cached.predicted_log_return,
+                        volatilityEstimate=cached.volatility_estimate,
+                        calibrationVersion=cached.calibration_version,
+                        observedFeatureSummary=cached.observed_feature_summary,
+                        latencyMs=int((perf_counter() - start) * 1000),
+                    )
+
+            if request.horizonSeconds not in pinned.models:
+                raise ValueError("MODEL_NOT_READY")
+            model = pinned.models[request.horizonSeconds]
+            out = model.predict_quant(f.vector, request.horizonSeconds, f.horizon_vol, summary)
+            if out is None:
+                quality = "OUT_OF_DOMAIN"
+                reasons = ["OUT_OF_DOMAIN"]
+            else:
+                pred_return = out["predictedLogReturn"]
+                pred_vol = out["volatilityEstimate"]
+                cal_version = out.get("calibrationVersion")
+                reasons = list(out["reasonCodes"])
+                summary.update(out.get("summaryExtras", {}))
+
+            if self.cache is not None:
+                self.cache.put(
+                    bundle.bundleId,
+                    f.id,
+                    request.horizonSeconds,
+                    request.asOf,
+                    quality,
+                    reasons,
+                    pred_return,
+                    pred_vol,
+                    summary,
+                    calibration_version=cal_version,
+                )
+
+        latency_ms = int((perf_counter() - start) * 1000)
+        return PredictionResult(
+            requestId=request.requestId,
+            quality=quality,  # type: ignore[arg-type]
+            reasonCodes=reasons,
+            modelBundleId=bundle.bundleId,
+            featureVersion=bundle.featureVersion,
+            featureSchemaHash=bundle.featureSchemaHash,
+            featureSnapshotId=f.id,
+            asOf=request.asOf,
+            horizonSeconds=request.horizonSeconds,
+            predictedLogReturn=pred_return,
+            volatilityEstimate=pred_vol,
+            calibrationVersion=cal_version,
+            observedFeatureSummary=summary,
             latencyMs=latency_ms,
         )

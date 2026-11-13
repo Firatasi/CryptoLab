@@ -60,6 +60,7 @@ class Candle:
 
     # Hacim bilinmiyorsa None'dur; None hicbir zaman 0 olarak doldurulmaz.
     volume: Decimal | None = None
+    taker_buy_volume: Decimal | None = None
 
     def __post_init__(self) -> None:
         # Saat dilimsiz zaman, "as of" karsilastirmasini sessizce bozar.

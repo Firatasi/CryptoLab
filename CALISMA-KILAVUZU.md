@@ -6,11 +6,11 @@ Bu paket uygulama kodu üretmez. Var olan dört şartnameyi değiştirmeden, bac
 
 ## 1. Açacağın sohbetler ve vereceğin dosyalar
 
-| Sohbet | O sohbete ekle | İlk görev |
-|---|---|---|
-| CryptoLab — Backend Öğrenme | README.md, backend/01-BACKEND.md, backend/BACKEND-GOREVLER.md | B01.1 |
-| CryptoLab — Frontend Öğrenme | README.md, frontend/02-FRONTEND.md, frontend/FRONTEND-GOREVLER.md | F01.1 |
-| CryptoLab — AI Öğrenme | README.md, ai/03-AI.md, ai/AI-GOREVLER.md | A01.1 |
+| Sohbet                       | O sohbete ekle                                                    | İlk görev |
+| ---------------------------- | ----------------------------------------------------------------- | --------- |
+| CryptoLab — Backend Öğrenme  | README.md, backend/01-BACKEND.md, backend/BACKEND-GOREVLER.md     | B01.1     |
+| CryptoLab — Frontend Öğrenme | README.md, frontend/02-FRONTEND.md, frontend/FRONTEND-GOREVLER.md | F01.1     |
+| CryptoLab — AI Öğrenme       | README.md, ai/03-AI.md, ai/AI-GOREVLER.md                         | A01.1     |
 
 [Backend görevleri](backend/BACKEND-GOREVLER.md) · [Frontend görevleri](frontend/FRONTEND-GOREVLER.md) · [AI görevleri](ai/AI-GOREVLER.md) · [Ana şartname](README.md).
 
@@ -44,11 +44,11 @@ Yalnız sanal işlem; gerçek bot veya borsa emir anahtarı yok. Dinamik varlık
 
 ## 5. Görev sayısı ve ana rota
 
-| Paket | Görev sayısı | Başlangıç → bitiş |
-|---|---:|---|
-| Backend | 12 | Sözleşme/iskelet → finance → ledger → identity → manuel işlem → market/Kafka → risk → rapor/gateway → AI → training facade → replay → entegrasyon |
-| Frontend | 10 | React temeli → auth → session/market → emir → pozisyon → stream → AI/tarama → rapor/replay → eğitim → E2E |
-| AI | 10 | Python/contract → feature → label/split → numeric eğitim → inference → PDF hazırlığı → reviewed dataset → fine-tuning → değerlendirme/registry → entegrasyon |
+| Paket    | Görev sayısı | Başlangıç → bitiş                                                                                                                                            |
+| -------- | -----------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Backend  |           12 | Sözleşme/iskelet → finance → ledger → identity → manuel işlem → market/Kafka → risk → rapor/gateway → AI → training facade → replay → entegrasyon            |
+| Frontend |           10 | React temeli → auth → session/market → emir → pozisyon → stream → AI/tarama → rapor/replay → eğitim → E2E                                                    |
+| AI       |           10 | Python/contract → feature → label/split → numeric eğitim → inference → PDF hazırlığı → reviewed dataset → fine-tuning → değerlendirme/registry → entegrasyon |
 
 Bu ana görevler tek oturumluk küçük işler değildir; her birinde 5–8 alt adım vardır. İlerlemenin birimi örneğin B03.2’dir, tüm B03’ü tek seferde bitirmek zorunda değilsin.
 
@@ -56,15 +56,15 @@ Bu ana görevler tek oturumluk küçük işler değildir; her birinde 5–8 alt 
 
 Önce B01 ortak sözleşme ve fixture başlangıcı yapılır. F01 ve A01 yalnız boş proje/öğrenme hazırlığı için daha erken başlayabilir; bağımsız public DTO icat etmezler.
 
-| Kapı | Gerekli çalışmalar | Kanıt / kullanım |
-|---|---|---|
-| K0 | B01 | Contract 1.0.0 başlangıcı + ortak fixture; F/A aynı sürümü okur |
-| K1 | B05 ve B04 | Auth+manuel preview/submit/close; F02–F05 gerçek API’ye bağlanır |
-| K2 | B06–B08 | Market/Kafka/risk/report/gateway; F06–F08 canlı veri ve rapora bağlanır |
-| K3 | B09 + A05 + F07 | Sözleşmeye uygun numeric analiz→proposal→onay; A09 öncesi geliştirme bundle’ı açık etiketli |
-| K4 | B10 + A06–A08 + F09 | Eğitim kaynak/örnek/run akışı; henüz başarılı fine-tuning varsayılmaz |
-| K5 | B11 + A09 + F08 | Java replay, maliyetli eval ve izinli model yayınlama |
-| K6 | B12 + F10 + A10 | Tam ürün testleri, doğrulanmış sürümler ve bitirme demosu |
+| Kapı | Gerekli çalışmalar  | Kanıt / kullanım                                                                            |
+| ---- | ------------------- | ------------------------------------------------------------------------------------------- |
+| K0   | B01                 | Contract 1.0.0 başlangıcı + ortak fixture; F/A aynı sürümü okur                             |
+| K1   | B05 ve B04          | Auth+manuel preview/submit/close; F02–F05 gerçek API’ye bağlanır                            |
+| K2   | B06–B08             | Market/Kafka/risk/report/gateway; F06–F08 canlı veri ve rapora bağlanır                     |
+| K3   | B09 + A05 + F07     | Sözleşmeye uygun numeric analiz→proposal→onay; A09 öncesi geliştirme bundle’ı açık etiketli |
+| K4   | B10 + A06–A08 + F09 | Eğitim kaynak/örnek/run akışı; henüz başarılı fine-tuning varsayılmaz                       |
+| K5   | B11 + A09 + F08     | Java replay, maliyetli eval ve izinli model yayınlama                                       |
+| K6   | B12 + F10 + A10     | Tam ürün testleri, doğrulanmış sürümler ve bitirme demosu                                   |
 
 B12/F10/A10 ortak final doğrulama oturumlarıdır: birbirinin DONE olmasını bekleyen üç kapalı ön koşul değildir. B11/F09/A09 yerel yetenekleri hazır olunca üç final görev IN_PROGRESS yapılır; ortak testin kanıtı her kayda ayrı yazılır.
 
@@ -118,20 +118,21 @@ Dört mevcut şartname içerik değişmeden korunur. Üç paket görev rehberi v
 
 Kontrol kaydı: 32 ana görev ve 223 işaretlenmemiş alt görev; yeni rehberlerde 13 yerel bağlantı ve görev numaraları doğrulandı. Yüklenen dört şartnamenin içerik hash’leri korunuyor. Bu kontrol doküman düzenine aittir; uygulama testleri çalıştırılmadı.
 
-
-| Klasör | Ne için kullanılacak? |
-|---|---|
-| `backend` | Java servisleri ve yardımcı Maven modülleri |
-| `frontend` | İleride kullanıcı arayüzü |
-| `ai` | İleride Python AI uygulaması |
+| Klasör      | Ne için kullanılacak?                                                 |
+| ----------- | --------------------------------------------------------------------- |
+| `backend`   | Java servisleri ve yardımcı Maven modülleri                           |
+| `frontend`  | İleride kullanıcı arayüzü                                             |
+| `ai`        | İleride Python AI uygulaması                                          |
 | `contracts` | Servislerin alışveriş yaptığı JSON verilerinin kuralları ve örnekleri |
-| `infra` | İleride Docker ve altyapı yapılandırmaları |
-| `progress` | Tamamlanan işler ve doğrulama sonuçları |
+| `infra`     | İleride Docker ve altyapı yapılandırmaları                            |
+| `progress`  | Tamamlanan işler ve doğrulama sonuçları                               |
 
+| Katman           | Görevi                                                                | Buraya koymayacağımız işler                     |
+| ---------------- | --------------------------------------------------------------------- | ----------------------------------------------- |
+| `api`            | HTTP isteğini alır, giriş biçimini doğrular, cevabı döner.            | SQL ve kâr/zarar hesabı                         |
+| `application`    | Bir kullanım senaryosunun adımlarını ve transaction sınırını yönetir. | Doğrudan SQL veya dış servis JSON’unu çözümleme |
+| `domain`         | İş kurallarını, modellerini ve kararlarını içerir.                    | Spring, HTTP, veritabanı erişimi                |
+| `infrastructure` | Veritabanı, Kafka, Redis ve dış HTTP bağlantılarını uygular.          | Finansal iş kararlarının sahipliği              |
 
-| Katman | Görevi | Buraya koymayacağımız işler |
-|---|---|---|
-| `api` | HTTP isteğini alır, giriş biçimini doğrular, cevabı döner. | SQL ve kâr/zarar hesabı |
-| `application` | Bir kullanım senaryosunun adımlarını ve transaction sınırını yönetir. | Doğrudan SQL veya dış servis JSON’unu çözümleme |
-| `domain` | İş kurallarını, modellerini ve kararlarını içerir. | Spring, HTTP, veritabanı erişimi |
-| `infrastructure` | Veritabanı, Kafka, Redis ve dış HTTP bağlantılarını uygular. | Finansal iş kararlarının sahipliği |
+.\.venv\Scripts\activate
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8091 --reload

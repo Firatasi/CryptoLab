@@ -2,7 +2,11 @@
 Backend HttpTrainingProvider, TrainingController ve TrainingJsonController ile birebir uyumlu rotalar.
 """
 import hashlib
+import os
+from ipaddress import ip_address
+from secrets import compare_digest
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
@@ -19,6 +23,11 @@ from app.registry.promotion import promote
 from app.registry.rollback import rollback
 from app.sources.multipart_parser import parse_multipart
 from app.sources.pdf_extract import extract_pages
+from app.sources.url_policy import validate_target
+
+
+MAX_UPLOAD_BODY_BYTES = 21 * 1024 * 1024
+_BLOCKED_HOST_SUFFIXES = (".local", ".internal", ".localhost")
 
 
 class Actor:
@@ -47,7 +56,9 @@ def get_actor(
     x_actor_authorities: str = Header(default="", alias="X-Actor-Authorities"),
     expected_secret: str = "cryptolab-secret-training",
 ) -> Actor:
-    if x_service_secret != expected_secret:
+    if not expected_secret or not compare_digest(
+        x_service_secret.encode("utf-8"), expected_secret.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail="INVALID_SERVICE_SECRET")
 
     if not x_actor_id:
@@ -69,29 +80,29 @@ def get_actor(
 
 
 class SourceImportRequest(BaseModel):
-    url: str
+    url: str = Field(min_length=8, max_length=2048)
 
 
 class ExampleJobRequest(BaseModel):
-    sourceVersionIds: list[str]
-    taskTypes: list[str]
+    sourceVersionIds: list[str] = Field(min_length=1, max_length=100)
+    taskTypes: list[str] = Field(min_length=1, max_length=20)
 
 
 class ReviewPatchRequest(BaseModel):
     expectedVersion: int
-    reviewStatus: str
+    reviewStatus: str = Field(min_length=1, max_length=64)
     correctedTarget: dict[str, Any] | None = None
 
 
 class DatasetCreateRequest(BaseModel):
-    kind: str
-    name: str = "dataset-v1"
+    kind: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="dataset-v1", min_length=1, max_length=128)
     examples: list[dict[str, Any]] = []
     splitByFamily: dict[str, str] = {}
 
 
 class RunCreateRequest(BaseModel):
-    task: str  # NUMERIC or EXPLANATION_SFT
+    task: str = Field(min_length=1, max_length=64)  # NUMERIC or EXPLANATION_SFT
     config: dict[str, Any]
 
 
@@ -102,7 +113,47 @@ class PromoteRequest(BaseModel):
 
 class RollbackRequest(BaseModel):
     expectedAliasVersion: int
-    reason: str
+    reason: str = Field(min_length=1, max_length=500)
+
+
+def _validate_import_url(raw_url: str) -> str:
+    try:
+        parsed = urlsplit(raw_url.strip())
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="IMPORT_URL_REJECTED") from exc
+
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.port not in (None, 443)
+    ):
+        raise HTTPException(status_code=400, detail="IMPORT_URL_REJECTED")
+
+    host = parsed.hostname.lower().rstrip(".")
+    if host == "localhost" or any(host.endswith(suffix) for suffix in _BLOCKED_HOST_SUFFIXES):
+        raise HTTPException(status_code=400, detail="IMPORT_HOST_REJECTED")
+
+    try:
+        addr = ip_address(host)
+        if not addr.is_global or addr.is_private or addr.is_loopback or addr.is_link_local:
+            raise HTTPException(status_code=400, detail="IMPORT_IP_REJECTED")
+    except ValueError:
+        # Hostname is DNS name, not raw IP literal.
+        pass
+
+    allowed_env = os.getenv("TRAINING_ALLOWED_IMPORT_HOSTS", "").strip()
+    if allowed_env:
+        allowed_hosts = {h.strip().lower() for h in allowed_env.split(",") if h.strip()}
+        try:
+            from app.sources.importer import resolve_ips
+
+            validate_target(raw_url.strip(), resolve_ips(host), allowed_hosts)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return parsed.geturl()
 
 
 def create_training_app(
@@ -112,7 +163,17 @@ def create_training_app(
     job_repo: JobRepository | None = None,
     artifact_store: ArtifactStore | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="CryptoLab Training API", version="1.0.0")
+    app = FastAPI(
+        title="CryptoLab Training API",
+        version="1.0.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=500, content={"detail": "INTERNAL_ERROR"})
 
     sources = source_repo or SourceRepository()
     examples = example_repo or ExampleRepository()
@@ -139,9 +200,25 @@ def create_training_app(
         idempotency_key: str = Header(alias="Idempotency-Key"),
         actor: Actor = Depends(actor_dep),
     ):
-        body_bytes = await request.body()
-        if len(body_bytes) > 21 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="UPLOAD_SIZE_EXCEEDED")
+        if not idempotency_key or len(idempotency_key) > 128:
+            raise HTTPException(status_code=400, detail="INVALID_KEY")
+
+        content_length_raw = request.headers.get("content-length")
+        if content_length_raw:
+            try:
+                if int(content_length_raw) > MAX_UPLOAD_BODY_BYTES:
+                    raise HTTPException(status_code=413, detail="UPLOAD_SIZE_EXCEEDED")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="INVALID_CONTENT_LENGTH") from exc
+
+        chunks: list[bytes] = []
+        total_read = 0
+        async for chunk in request.stream():
+            total_read += len(chunk)
+            if total_read > MAX_UPLOAD_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="UPLOAD_SIZE_EXCEEDED")
+            chunks.append(chunk)
+        body_bytes = b"".join(chunks)
 
         content_type = request.headers.get("content-type", "")
         if "multipart/form-data" in content_type:
@@ -191,8 +268,11 @@ def create_training_app(
         idempotency_key: str = Header(alias="Idempotency-Key"),
         actor: Actor = Depends(actor_dep),
     ):
+        if not idempotency_key or len(idempotency_key) > 128:
+            raise HTTPException(status_code=400, detail="INVALID_KEY")
+        safe_url = _validate_import_url(body.url)
         job_id = uuid4()
-        return {"jobId": str(job_id), "status": "QUEUED", "url": body.url}
+        return {"jobId": str(job_id), "status": "QUEUED", "url": safe_url}
 
     # 3. GET SOURCES
     @app.get("/internal/training/sources")

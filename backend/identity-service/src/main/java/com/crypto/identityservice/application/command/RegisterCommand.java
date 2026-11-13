@@ -1,9 +1,13 @@
 package com.crypto.identityservice.application.command;
 
+import java.util.UUID;
+
 public record RegisterCommand(
         String email,
         String displayName,
-        String password
+        String password,
+        UUID captchaId,
+        String captchaAnswer
 ) {
 
     public RegisterCommand {
@@ -12,7 +16,9 @@ public record RegisterCommand(
                 || displayName == null || displayName.isBlank()
                 || displayName.length() > 80
                 || password == null || password.isBlank()
-                || password.length() < 12 || password.length() > 72) {
+                || password.length() < 12 || password.length() > 72
+                || captchaId == null
+                || captchaAnswer == null || captchaAnswer.isBlank() || captchaAnswer.length() > 16) {
             throw new IllegalArgumentException("INVALID_REGISTRATION");
         }
     }
