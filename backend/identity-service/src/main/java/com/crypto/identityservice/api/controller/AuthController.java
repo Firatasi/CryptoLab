@@ -1,10 +1,16 @@
 package com.crypto.identityservice.api.controller;
 
+import com.crypto.identityservice.api.dto.request.ContactMessageRequest;
 import com.crypto.identityservice.api.dto.request.LoginRequest;
 import com.crypto.identityservice.api.dto.request.RegisterRequest;
+import com.crypto.identityservice.api.dto.response.CaptchaChallengeResponse;
 import com.crypto.identityservice.api.dto.response.TokenResponse;
 import com.crypto.identityservice.api.dto.response.UserResponse;
 import com.crypto.identityservice.api.mapper.AuthMapper;
+import com.crypto.identityservice.application.port.LoginLimiter;
+import com.crypto.identityservice.application.service.AdminSupportService;
+import com.crypto.identityservice.application.service.AdminSupportService.ContactSubmissionView;
+import com.crypto.identityservice.application.service.CaptchaService;
 import com.crypto.identityservice.application.service.IdentityService;
 import com.crypto.identityservice.application.service.UserQueryService;
 import com.nimbusds.jose.jwk.JWKSet;
@@ -19,18 +25,27 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @RestController
 public class AuthController {
 
     private static final String AUTH_PATH = "/api/v1/auth";
     private static final long REFRESH_TTL_SECONDS = 604_800;
+    private static final Set<String> LOOPBACK_ADDRS = Set.of("127.0.0.1", "::1", "0:0:0:0:0:0:0:1");
+    private static final Pattern SAFE_IP_PATTERN = Pattern.compile("^[0-9a-fA-F:.]{3,45}$");
 
     private final IdentityService service;
     private final UserQueryService users;
+    private final CaptchaService captchaService;
+    private final AdminSupportService supportService;
+    private final LoginLimiter limiter;
     private final AuthMapper mapper;
     private final RSAKey signingKey;
     private final String allowedOrigin;
@@ -39,6 +54,9 @@ public class AuthController {
     public AuthController(
             IdentityService service,
             UserQueryService users,
+            CaptchaService captchaService,
+            AdminSupportService supportService,
+            LoginLimiter limiter,
             AuthMapper mapper,
             RSAKey signingKey,
             @Value("${web.origin}") String allowedOrigin,
@@ -46,10 +64,35 @@ public class AuthController {
     ) {
         this.service = service;
         this.users = users;
+        this.captchaService = captchaService;
+        this.supportService = supportService;
+        this.limiter = limiter;
         this.mapper = mapper;
         this.signingKey = signingKey;
         this.allowedOrigin = allowedOrigin;
         this.secureCookie = secureCookie;
+    }
+
+    @GetMapping(AUTH_PATH + "/captcha")
+    public ResponseEntity<CaptchaChallengeResponse> captcha(HttpServletRequest httpRequest) {
+        limiter.check("captcha-ip:" + resolveClientIp(httpRequest));
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(captchaService.createChallenge());
+    }
+
+    @PostMapping(
+            value = AUTH_PATH + "/contact",
+            consumes = "application/json"
+    )
+    public ResponseEntity<ContactSubmissionView> submitContact(
+            @Valid @RequestBody ContactMessageRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        limiter.check("contact-ip:" + resolveClientIp(httpRequest));
+        return ResponseEntity.status(201)
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(supportService.submitContact(request));
     }
 
     @PostMapping(
@@ -61,6 +104,9 @@ public class AuthController {
             @RequestHeader("Idempotency-Key") String key
     ) {
         validateKey(key);
+        if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attrs) {
+            limiter.check("register-ip:" + resolveClientIp(attrs.getRequest()));
+        }
 
         UUID userId = service.register(
                 mapper.toCommand(request),
@@ -68,6 +114,7 @@ public class AuthController {
         );
 
         return ResponseEntity.status(201)
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .body(userView(userId));
     }
 
@@ -79,11 +126,10 @@ public class AuthController {
             @Valid @RequestBody LoginRequest request,
             HttpServletRequest httpRequest
     ) {
-        // İstemcinin gönderdiği X-Forwarded-For değerine güvenmiyoruz.
         var issued = service.login(
                 request.email(),
                 request.password(),
-                httpRequest.getRemoteAddr()
+                resolveClientIp(httpRequest)
         );
 
         return tokenResponse(issued);
@@ -162,7 +208,7 @@ public class AuthController {
     public UserResponse me(@AuthenticationPrincipal Jwt jwt) {
         UUID subject = UUID.fromString(jwt.getSubject());
 
-        return userView(subject);
+        return mapper.toResponse(users.findAndTouch(subject));
     }
 
     @GetMapping("/.well-known/jwks.json")
@@ -218,5 +264,35 @@ public class AuthController {
         if (key == null || key.isBlank() || key.length() > 128) {
             throw new IllegalArgumentException("INVALID_KEY");
         }
+    }
+
+    private static String resolveClientIp(HttpServletRequest request) {
+        if (request == null) {
+            return "unknown";
+        }
+        String remoteAddr = request.getRemoteAddr();
+        if (remoteAddr != null && LOOPBACK_ADDRS.contains(remoteAddr)) {
+            String realIp = normalizeIp(request.getHeader("X-Real-IP"));
+            if (realIp != null) {
+                return realIp;
+            }
+            String xff = request.getHeader("X-Forwarded-For");
+            if (xff != null && !xff.isBlank()) {
+                String first = normalizeIp(xff.split(",")[0]);
+                if (first != null) {
+                    return first;
+                }
+            }
+        }
+        String normalizedRemote = normalizeIp(remoteAddr);
+        return normalizedRemote != null ? normalizedRemote : "unknown";
+    }
+
+    private static String normalizeIp(String candidate) {
+        if (candidate == null) {
+            return null;
+        }
+        String trimmed = candidate.trim();
+        return SAFE_IP_PATTERN.matcher(trimmed).matches() ? trimmed : null;
     }
 }

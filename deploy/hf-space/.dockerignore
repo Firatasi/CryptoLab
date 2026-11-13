@@ -1,0 +1,16 @@
+.git/
+.gitignore
+*.env
+.env*
+*.pem
+*.key
+**/target/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+weights/
+ai/weights/
+ai/artifacts/models/
+node_modules/
+frontend/

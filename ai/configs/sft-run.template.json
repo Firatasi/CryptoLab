@@ -1,0 +1,20 @@
+{
+  "runId": "sft-explanation-qwen-01",
+  "baseModel": "Qwen/Qwen2.5-1.5B-Instruct",
+  "baseRevision": "99ea7011d6a695d7f1d4f014e7ea72c47671f92e",
+  "tokenizerPath": "weights/tokenizers/qwen2.5-1.5b",
+  "localBasePath": "weights/base/qwen2.5-1.5b",
+  "outputDir": "artifacts/sft-runs/qwen-01",
+  "rank": 8,
+  "alpha": 16,
+  "dropout": 0.05,
+  "targetModules": ["q_proj", "v_proj"],
+  "learningRate": 0.0002,
+  "epochs": 3,
+  "batchSize": 2,
+  "gradientAccumulation": 4,
+  "maxTokens": 512,
+  "seed": 42,
+  "useCpu": true
+}
+

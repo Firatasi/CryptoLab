@@ -1,0 +1,82 @@
+# ==============================================================================
+# Gemini Otomatik PR Review Yapılandırması
+# Repository: fullstack-excercises
+# ==============================================================================
+
+version: "1.0"
+repository_name: "fullstack-excercises"
+
+# AI Model Ayarları
+# Google AI Studio Free Tier (100% Ücretsiz Katman - Kredi kartı veya ücret gerektirmez):
+# - gemini-2.0-flash: En güncel, yüksek hızlı ve yetenekli Flash modeli (Varsayılan)
+# - gemini-1.5-flash-latest: Kararlı ikincil yedek Flash modeli
+models:
+  primary: "gemini-2.0-flash"
+  fallback: "gemini-1.5-flash-latest"
+  temperature: 0.1
+
+# İnceleme Davranışı
+# - advisory: İncelemeyi COMMENT olarak yayınlar, PR'ı doğrudan bloklamaz (Önerilen varsayılan).
+# - strict: P0 (Kritik güvenlik/çökme) bulgusu tespit edilirse REQUEST_CHANGES gönderir.
+mode: "advisory"
+
+# Bütçe, Kota ve Güvenlik Sınırları
+limits:
+  max_files_per_review: 15
+  max_diff_chars: 65000
+  max_inline_comments: 10
+  context_surrounding_lines: 15
+  request_timeout_seconds: 45
+  max_retries: 3
+  backoff_factor_seconds: 5
+
+# AI İncelemesinden Hariç Tutulacak Dosya ve Dizin Kalıpları
+# (Binary, lockfile, vendor ve build çıktıları gönderilmez)
+exclude_patterns:
+  - "*.lock"
+  - "package-lock.json"
+  - "pnpm-lock.yaml"
+  - "yarn.lock"
+  - "**/target/**"
+  - "**/dist/**"
+  - "**/build/**"
+  - "**/node_modules/**"
+  - "**/.venv/**"
+  - "**/.idea/**"
+  - "**/.vscode/**"
+  - "**/*.min.js"
+  - "**/*.min.css"
+  - "**/*.map"
+  - "**/*.png"
+  - "**/*.jpg"
+  - "**/*.jpeg"
+  - "**/*.gif"
+  - "**/*.svg"
+  - "**/*.ico"
+  - "**/*.pyc"
+  - "**/__pycache__/**"
+  - "**/.pytest_cache/**"
+  - "**/*.dump"
+  - "**/*.hprof"
+  - "**/*.log"
+
+# Proje Bazlı Özel Kurallar (Override / İsteğe Bağlı)
+# Dinamik keşif açıktır; bu liste özel kurallar eklemek istediğiniz projeler içindir.
+projects:
+  backend:
+    technology: "Java / Spring Boot"
+    rules:
+      - "Veritabanı işlemlerinde @Transactional sınırlarına, race condition ve dirty read risklerine dikkat et."
+      - "Yetkilendirme (AuthZ) kontrollerini controller veya servis katmanında doğrula; IDOR açıklarını incele."
+      - "Eğitim veya küçük servis modüllerinde gereksiz Kafka/Redis soyutlamaları önerme."
+  frontend:
+    technology: "React / TypeScript"
+    rules:
+      - "useEffect bağımlılık dizilerine (dependency array) ve olası sonsuz yeniden render döngülerine odaklan."
+      - "XSS açıklarına (dangerouslySetInnerHTML) ve asenkron state yarışlarına (race condition) dikkat et."
+  ai:
+    technology: "Python / FastAPI / ML"
+    rules:
+      - "Model yükleme ve dosya işlemlerinde bellek sızıntılarına ve güvensiz deserialization (pickle) risklerine dikkat et."
+      - "Path traversal ve girdi doğrulama açıklarını kontrol et."
+

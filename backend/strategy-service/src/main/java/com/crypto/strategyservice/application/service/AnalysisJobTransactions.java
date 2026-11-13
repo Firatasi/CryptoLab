@@ -43,6 +43,29 @@ public class AnalysisJobTransactions {
     }
 
     @Transactional
+    public UUID enqueueIdempotent(
+            UUID ownerId,
+            UUID sessionId,
+            UUID instrumentId,
+            int horizonSeconds,
+            Instant asOf,
+            String idempotencyKey,
+            Instant now,
+            String riskLevel
+    ) {
+        return jobs.enqueueIdempotent(
+                ownerId,
+                sessionId,
+                instrumentId,
+                horizonSeconds,
+                asOf,
+                idempotencyKey,
+                now,
+                riskLevel
+        );
+    }
+
+    @Transactional
     public Optional<AnalysisJobRepository.ClaimedJob> claimNext(
             Instant now,
             Duration leaseDuration
@@ -119,11 +142,23 @@ public class AnalysisJobTransactions {
             String policyReason,
             Instant now
     ) {
+        return completePolicyWait(job, prediction, policyReason, null, now);
+    }
+
+    @Transactional
+    public boolean completePolicyWait(
+            AnalysisJobRepository.ClaimedJob job,
+            PredictionResult prediction,
+            String policyReason,
+            String explanationText,
+            Instant now
+    ) {
         return jobs.completePolicyWait(
                 job.id(),
                 job.workerToken(),
                 prediction,
                 policyReason,
+                explanationText,
                 now
         );
     }

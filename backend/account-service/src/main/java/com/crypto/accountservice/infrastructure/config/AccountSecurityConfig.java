@@ -12,6 +12,8 @@ import org.springframework.security.oauth2.core.*;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.*;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 import java.util.Map;
 import java.util.UUID;
 @Configuration
@@ -41,6 +43,12 @@ public class AccountSecurityConfig {
         // Account yalnız Authorization Bearer ile GET kabul eder. Cookie oturumu/login yok.
         // Bu ayarı Identity refresh/logout CSRF politikasına kopyalama.
         http.csrf(c -> c.disable()).sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .requestCache(c -> c.disable())
+                .headers(headers -> headers
+                        .frameOptions(frame -> frame.deny())
+                        .contentTypeOptions(Customizer.withDefaults())
+                        .referrerPolicy(referrer -> referrer.policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER))
+                )
                 .formLogin(f -> f.disable()).httpBasic(b -> b.disable())
                 .authorizeHttpRequests(a -> a.requestMatchers("/actuator/health").permitAll()
                     .requestMatchers(HttpMethod.GET,"/api/v1/account/me/summary","/api/v1/account/me/trades").authenticated()

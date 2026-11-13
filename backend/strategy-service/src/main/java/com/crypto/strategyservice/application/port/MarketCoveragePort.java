@@ -35,6 +35,10 @@ public interface MarketCoveragePort {
 
     MarketEvaluation evaluate(UUID instrumentId, int horizonSeconds, Instant asOf);
 
+    default int maxLeverageForInstrument(UUID instrumentId) {
+        return 50;
+    }
+
     void triggerBackfill(UUID backfillId, UUID instrumentId, int horizonSeconds, Instant asOf);
 }
 

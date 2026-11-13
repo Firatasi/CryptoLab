@@ -9,7 +9,9 @@ import java.util.function.Function;
 public class FixtureExplanationClient implements ExplanationClient {
 
     private volatile Function<Request, String> behavior = req ->
-            "FIXTURE_EXPLANATION[" + req.action() + ":" + req.policyReason() + "]";
+            "Seçilen vadeli işlem sözleşmesi ve tahmin ufku için maliyet sonrası beklenen net getiri (net edge), "
+            + "volatilite (ATR) ve likidite koşulları değerlendirilmiştir. Karar motoru " + req.action()
+            + " yönünde sinyal üretmiş olup zarar durdur (SL) ve kâr al (TP) seviyeleri ATR çarpanlarına göre hesaplanmıştır.";
 
     public void setBehavior(Function<Request, String> behavior) {
         this.behavior = behavior;

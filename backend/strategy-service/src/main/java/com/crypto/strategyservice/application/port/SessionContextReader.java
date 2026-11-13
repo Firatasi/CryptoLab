@@ -27,6 +27,19 @@ public interface SessionContextReader {
         }
     }
 
+    record SessionRiskProfile(
+            UUID riskPolicyId,
+            int maxLeverage
+    ) {
+        public static final UUID BALANCED_POLICY_ID = UUID.fromString("99999999-9999-4999-8999-999999999999");
+        public static final UUID CONSERVATIVE_POLICY_ID = UUID.fromString("99999999-9999-4999-8999-999999999998");
+        public static final UUID ADVANCED_POLICY_ID = UUID.fromString("99999999-9999-4999-8999-999999999997");
+    }
+
     Optional<SessionSnapshot> findOwnedSession(UUID ownerId, UUID sessionId, UUID instrumentId);
+
+    default SessionRiskProfile findSessionRiskProfile(UUID ownerId, UUID sessionId) {
+        return new SessionRiskProfile(SessionRiskProfile.BALANCED_POLICY_ID, 20);
+    }
 }
 

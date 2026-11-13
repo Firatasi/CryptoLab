@@ -13,7 +13,9 @@ public class AuthMapper {
         return new RegisterCommand(
                 request.email(),
                 request.displayName(),
-                request.password()
+                request.password(),
+                request.captchaId(),
+                request.captchaAnswer()
         );
     }
 

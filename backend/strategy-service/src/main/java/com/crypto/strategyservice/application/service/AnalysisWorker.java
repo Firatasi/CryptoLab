@@ -6,8 +6,10 @@ import com.crypto.strategyservice.application.port.ModelClient;
 import com.crypto.strategyservice.application.port.SessionContextReader;
 import com.crypto.strategyservice.application.repository.AnalysisJobRepository;
 import com.crypto.strategyservice.domain.model.PredictionResult;
+import com.crypto.strategyservice.domain.service.AdaptiveNumericPolicy;
 import com.crypto.strategyservice.domain.service.ExplanationTemplate;
 import com.crypto.strategyservice.domain.service.NumericPolicy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -35,6 +37,16 @@ public class AnalysisWorker {
             0.50
     );
 
+    private static final NumericPolicy.Artifact DEFAULT_ADAPTIVE_POLICY_ARTIFACT = new NumericPolicy.Artifact(
+            "quant-adaptive-v2",
+            0.0022,
+            0.90,
+            new BigDecimal("1.65"),
+            new BigDecimal("2.0"),
+            new BigDecimal("10"),
+            0.65
+    );
+
     private final AnalysisJobTransactions transactions;
     private final ModelClient modelClient;
     private final SessionContextReader sessionContextReader;
@@ -45,6 +57,7 @@ public class AnalysisWorker {
     private final Duration proposalTtl;
     private final String policyVersion;
 
+    @Autowired
     public AnalysisWorker(
             AnalysisJobTransactions transactions,
             ModelClient modelClient,
@@ -54,7 +67,7 @@ public class AnalysisWorker {
             Clock clock,
             @Value("${strategy.worker.lease-seconds:30}") long leaseSeconds,
             @Value("${strategy.proposal.ttl-seconds:60}") long proposalTtlSeconds,
-            @Value("${strategy.policy.version:policy-v1}") String policyVersion
+            @Value("${strategy.policy.version:quant-adaptive-v2}") String policyVersion
     ) {
         this.transactions = transactions;
         this.modelClient = modelClient;
@@ -75,6 +88,18 @@ public class AnalysisWorker {
             Instant asOf,
             String idempotencyKey
     ) {
+        return enqueue(ownerId, sessionId, instrumentId, horizonSeconds, asOf, idempotencyKey, null);
+    }
+
+    public UUID enqueue(
+            UUID ownerId,
+            UUID sessionId,
+            UUID instrumentId,
+            int horizonSeconds,
+            Instant asOf,
+            String idempotencyKey,
+            String riskLevel
+    ) {
         if (!SUPPORTED_HORIZONS.contains(horizonSeconds)) {
             throw new IllegalArgumentException("INVALID_HORIZON");
         }
@@ -83,6 +108,7 @@ public class AnalysisWorker {
         if (!"RUNNING".equals(session.status())) {
             throw new IllegalStateException("SESSION_HALTED");
         }
+        String normalizedRisk = AdaptiveNumericPolicy.normalizeRiskLevel(riskLevel);
         return transactions.enqueueIdempotent(
                 ownerId,
                 sessionId,
@@ -90,7 +116,8 @@ public class AnalysisWorker {
                 horizonSeconds,
                 asOf,
                 idempotencyKey,
-                clock.instant()
+                clock.instant(),
+                normalizedRisk == null ? "AUTO" : normalizedRisk
         );
     }
 
@@ -189,21 +216,56 @@ public class AnalysisWorker {
             return true;
         }
 
-        // 5. READY numeric prediction -> Sürümlü NumericPolicy değerlendirmesi
+        // 5. READY numeric prediction -> Sürümlü NumericPolicy / AdaptiveNumericPolicy değerlendirmesi
+        boolean useLegacyPolicy = "policy-v1".equals(policyVersion)
+                && !(prediction.featureVersion() != null && prediction.featureVersion().startsWith("features-quant-v"));
+        NumericPolicy.Artifact fallbackArtifact = useLegacyPolicy
+                ? DEFAULT_POLICY_ARTIFACT
+                : DEFAULT_ADAPTIVE_POLICY_ARTIFACT;
         NumericPolicy.Artifact policy = transactions.findPolicyArtifact(policyVersion)
-                .orElse(DEFAULT_POLICY_ARTIFACT);
+                .orElse(fallbackArtifact);
 
-        NumericPolicy.Outcome outcome = NumericPolicy.evaluate(
-                prediction,
-                policy,
-                market.referencePrice(),
-                market.verifiedAtr(),
-                market.coverage(),
-                session.estimatedRoundTripCost()
-        );
+        NumericPolicy.Outcome outcome;
+        String effectiveRisk = null;
+        if (useLegacyPolicy) {
+            outcome = NumericPolicy.evaluate(
+                    prediction,
+                    policy,
+                    market.referencePrice(),
+                    market.verifiedAtr(),
+                    market.coverage(),
+                    session.estimatedRoundTripCost()
+            );
+        } else {
+            SessionContextReader.SessionRiskProfile riskProfile =
+                    sessionContextReader.findSessionRiskProfile(job.ownerId(), job.sessionId());
+            int instMaxLev = marketCoveragePort.maxLeverageForInstrument(job.instrumentId());
+            effectiveRisk = (job.riskLevel() == null || job.riskLevel().isBlank() || "AUTO".equalsIgnoreCase(job.riskLevel()))
+                    ? AdaptiveNumericPolicy.riskLevelFromPolicyId(riskProfile.riskPolicyId())
+                    : job.riskLevel();
+            outcome = AdaptiveNumericPolicy.evaluateAdaptive(
+                    prediction,
+                    policy,
+                    market.referencePrice(),
+                    market.verifiedAtr(),
+                    market.coverage(),
+                    session.estimatedRoundTripCost(),
+                    effectiveRisk,
+                    riskProfile.maxLeverage(),
+                    instMaxLev
+            );
+        }
 
         if ("WAIT".equals(outcome.action())) {
-            transactions.completePolicyWait(job, prediction, outcome.reason(), clock.instant());
+            String waitSummary = useLegacyPolicy ? null : AdaptiveNumericPolicy.buildWaitSummary(
+                    prediction,
+                    outcome.reason(),
+                    job.horizonSeconds(),
+                    market.referencePrice(),
+                    market.verifiedAtr(),
+                    effectiveRisk
+            );
+            transactions.completePolicyWait(job, prediction, outcome.reason(), waitSummary, clock.instant());
             return true;
         }
 
@@ -234,7 +296,10 @@ public class AnalysisWorker {
                     outcome.action(),
                     outcome.reason(),
                     finalReasons,
-                    prediction.observedFeatureSummary()
+                    prediction.observedFeatureSummary(),
+                    pinned.modelBundleId(),
+                    prediction,
+                    outcome
             ));
             if (generated == null || generated.isBlank()) {
                 throw new IllegalStateException("EMPTY_EXPLANATION");

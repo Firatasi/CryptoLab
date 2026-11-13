@@ -1,45 +1,59 @@
-name: "Gemini Review"
+name: "Gemini PR Review"
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  push:
-    branches:
-      - "**"
 
+# Yeni commit geldiğinde önceki çalışan incelemeyi otomatik iptal et (Stale ve gereksiz kota tüketimini önler)
+concurrency:
+  group: gemini-pr-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# En az yetki ilkesi (Least Privilege)
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
-  issues: write
   statuses: write
 
 jobs:
   gemini-review:
-    name: "Gemini Review"
+    name: "Gemini Automated Code Review"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-      - name: Repo Kodunu Çek
-        uses: actions/checkout@v4
+      - name: Kodu Klonla (Base ve Head Bağlamı)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
-      - name: Python Kurulumu
-        uses: actions/setup-python@v5
+      - name: Python Ortamını Kur
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: ".github/workflows/gemini-review.yml"
 
-      - name: Gerekli Paketleri Yükle
-        run: pip install google-genai requests
+      - name: Bağımlılıkları Yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-genai pyyaml
 
-      - name: Gemini Security Review
+      - name: Gemini Otomatik PR Review'ı Çalıştır
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE_SHA: ${{ github.event.before }}
-          PUSH_AFTER_SHA: ${{ github.sha }}
-        run: python3 .github/scripts/gemini_review.py
+        run: |
+          python3 .github/scripts/gemini_review.py \
+            --workspace . \
+            --config .github/review-config.yml \
+            --pr-number "${PR_NUMBER}" \
+            --head-sha "${PR_HEAD_SHA}" \
+            --base-sha "${PR_BASE_SHA}" \
+            --repo "${GITHUB_REPOSITORY}"

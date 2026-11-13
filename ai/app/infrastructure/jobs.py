@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 
 class JobRepository:
-    def __init__(self, connection: Any) -> None:
+    def __init__(self, connection: Any = None) -> None:
         self.db = connection
 
     def enqueue(

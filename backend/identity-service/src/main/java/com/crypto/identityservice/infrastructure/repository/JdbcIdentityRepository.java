@@ -271,4 +271,13 @@ public class JdbcIdentityRepository implements IdentityRepository {
                 user
         );
     }
+
+    @Override
+    public void touchLastSeen(UUID userId, Instant now) {
+        jdbc.update("""
+                UPDATE users
+                SET last_seen_at = ?
+                WHERE id = ?
+                """, Timestamp.from(now), userId);
+    }
 }
