@@ -6,14 +6,19 @@ import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.security.spec.PKCS8EncodedKeySpec;
@@ -50,30 +55,59 @@ public class TokenConfig {
         return Base64.getDecoder().decode(content);
     }
 
+    private static boolean canUseEphemeralTestKeys(boolean allowEphemeralTestKeys, Environment environment) {
+        return allowEphemeralTestKeys
+                && environment != null
+                && environment.acceptsProfiles(Profiles.of("test"))
+                && !environment.acceptsProfiles(Profiles.of("prod"));
+    }
+
+    private static RSAKey generateEphemeralRsaKey(String kid) throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        KeyPair pair = generator.generateKeyPair();
+        return new RSAKey.Builder((RSAPublicKey) pair.getPublic())
+                .privateKey((RSAPrivateKey) pair.getPrivate())
+                .keyID(kid)
+                .build();
+    }
+
     @Bean
     public RSAKey signingKey(
             @Value("${jwt.private-key-path}") String privatePath,
             @Value("${jwt.public-key-path}") String publicPath,
-            @Value("${jwt.kid}") String kid
+            @Value("${jwt.kid}") String kid,
+            @Value("${jwt.allow-ephemeral-test-keys:false}") boolean allowEphemeralTestKeys,
+            Environment environment
     ) throws Exception {
-        KeyFactory factory = KeyFactory.getInstance("RSA");
-
-        RSAPublicKey publicKey = (RSAPublicKey) factory.generatePublic(
-                new X509EncodedKeySpec(readPem(publicPath))
-        );
-
-        RSAPrivateKey privateKey = (RSAPrivateKey) factory.generatePrivate(
-                new PKCS8EncodedKeySpec(readPem(privatePath))
-        );
-
-        if (!publicKey.getModulus().equals(privateKey.getModulus())) {
-            throw new IllegalStateException("KEY_PAIR_MISMATCH");
+        if (privatePath == null || privatePath.isBlank() || publicPath == null || publicPath.isBlank()) {
+            throw new IllegalArgumentException("KEY_PATH_REQUIRED");
         }
+        try {
+            KeyFactory factory = KeyFactory.getInstance("RSA");
 
-        return new RSAKey.Builder(publicKey)
-                .privateKey(privateKey)
-                .keyID(kid)
-                .build();
+            RSAPublicKey publicKey = (RSAPublicKey) factory.generatePublic(
+                    new X509EncodedKeySpec(readPem(publicPath))
+            );
+
+            RSAPrivateKey privateKey = (RSAPrivateKey) factory.generatePrivate(
+                    new PKCS8EncodedKeySpec(readPem(privatePath))
+            );
+
+            if (!publicKey.getModulus().equals(privateKey.getModulus())) {
+                throw new IllegalStateException("KEY_PAIR_MISMATCH");
+            }
+
+            return new RSAKey.Builder(publicKey)
+                    .privateKey(privateKey)
+                    .keyID(kid)
+                    .build();
+        } catch (NoSuchFileException missingKeyFile) {
+            if (canUseEphemeralTestKeys(allowEphemeralTestKeys, environment)) {
+                return generateEphemeralRsaKey(kid);
+            }
+            throw missingKeyFile;
+        }
     }
 
     @Bean
