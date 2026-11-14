@@ -1,8 +1,10 @@
 package com.crypto.marketdataservice.api.controller;
 
+import com.crypto.marketdataservice.infrastructure.client.BinanceFuturesStreamHub;
 import com.crypto.marketdataservice.infrastructure.client.PublicMarketHttp;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -11,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -53,8 +56,13 @@ public class MarketController {
     private static final int MAX_UUID_CACHE_ENTRIES = 2_000;
     private static final int MAX_SSE_STREAMS = 500;
 
+    private static final long QUOTE_CACHE_TTL_MS = 400L;
+    private static final long CANDLE_CACHE_TTL_MS = 500L;
+    private static final long TICKERS_BASE_REFRESH_MS = 10_000L;
+
     private final PublicMarketHttp binanceHttp;
     private final PublicMarketHttp binanceVisionHttp;
+    private final BinanceFuturesStreamHub streamHub;
     private final AtomicLong sequenceGenerator = new AtomicLong(1000L);
     private final AtomicInteger activeStreams = new AtomicInteger(0);
 
@@ -70,8 +78,14 @@ public class MarketController {
     }
 
     public MarketController(ObjectMapper objectMapper) {
+        this(objectMapper, BinanceFuturesStreamHub.disabled(objectMapper));
+    }
+
+    @Autowired
+    public MarketController(ObjectMapper objectMapper, BinanceFuturesStreamHub streamHub) {
         this.binanceHttp = new PublicMarketHttp(URI.create("https://fapi.binance.com"), objectMapper);
         this.binanceVisionHttp = new PublicMarketHttp(URI.create("https://data-api.binance.vision"), objectMapper);
+        this.streamHub = streamHub;
     }
 
     @GetMapping("/tickers")
@@ -176,9 +190,13 @@ public class MarketController {
             @RequestParam(defaultValue = "BTCUSDT") String instrumentId
     ) {
         String symbol = sanitizeSymbol(instrumentId);
+        Map<String, Object> liveWsQuote = streamHub.latestLiveQuote(symbol, 1_500L);
+        if (liveWsQuote != null) {
+            return liveWsQuote;
+        }
         long nowMs = System.currentTimeMillis();
         CachedPayload cached = quoteCache.get(symbol);
-        if (cached != null && (nowMs - cached.timestampMs()) < 1_000L) {
+        if (cached != null && (nowMs - cached.timestampMs()) < QUOTE_CACHE_TTL_MS) {
             return cached.payload();
         }
         Instant now = Instant.now();
@@ -193,6 +211,7 @@ public class MarketController {
 
             Map<String, Object> out = buildQuotePayload(
                     symbol, now, premiumFut.join(), bookFut.join(), tickerFut.join());
+            streamHub.seedQuote(symbol, out);
             putBoundedCache(quoteCache, symbol, System.currentTimeMillis(), out, MAX_QUOTE_CACHE_ENTRIES);
             return out;
         } catch (Exception primaryIgnored) {
@@ -203,6 +222,7 @@ public class MarketController {
                         () -> fetchUnchecked(binanceVisionHttp, "/api/v3/ticker/24hr?symbol=" + encoded));
 
                 Map<String, Object> out = buildQuotePayload(symbol, now, null, bookFut.join(), tickerFut.join());
+                streamHub.seedQuote(symbol, out);
                 putBoundedCache(quoteCache, symbol, System.currentTimeMillis(), out, MAX_QUOTE_CACHE_ENTRIES);
                 return out;
             } catch (Exception fallbackIgnored) {
@@ -263,8 +283,8 @@ public class MarketController {
         long nowMs = System.currentTimeMillis();
 
         CachedPayload cached = candleCache.get(cacheKey);
-        if (cached != null && (nowMs - cached.timestampMs()) < 1_000L) {
-            return cached.payload();
+        if (cached != null && (nowMs - cached.timestampMs()) < CANDLE_CACHE_TTL_MS) {
+            return withLiveLastBar(symbol, cached.payload());
         }
 
         String encodedSym = URLEncoder.encode(symbol, StandardCharsets.UTF_8);
@@ -272,18 +292,58 @@ public class MarketController {
             String path = String.format(Locale.ROOT, "/fapi/v1/klines?symbol=%s&interval=%s&limit=%d",
                     encodedSym, safeInterval, safeLimit);
             Map<String, Object> payload = buildCandlesPayload(symbol, safeInterval, binanceHttp.get(path));
-            putBoundedCache(candleCache, cacheKey, nowMs, payload, MAX_CANDLE_CACHE_ENTRIES);
-            return payload;
+            putBoundedCache(candleCache, cacheKey, System.currentTimeMillis(), payload, MAX_CANDLE_CACHE_ENTRIES);
+            return withLiveLastBar(symbol, payload);
         } catch (Exception primaryIgnored) {
             try {
                 String visionPath = String.format(Locale.ROOT, "/api/v3/klines?symbol=%s&interval=%s&limit=%d",
                         encodedSym, safeInterval, safeLimit);
                 Map<String, Object> payload = buildCandlesPayload(symbol, safeInterval, binanceVisionHttp.get(visionPath));
-                putBoundedCache(candleCache, cacheKey, nowMs, payload, MAX_CANDLE_CACHE_ENTRIES);
-                return payload;
+                putBoundedCache(candleCache, cacheKey, System.currentTimeMillis(), payload, MAX_CANDLE_CACHE_ENTRIES);
+                return withLiveLastBar(symbol, payload);
             } catch (Exception fallbackIgnored) {
                 return fallbackCandles(symbol, safeInterval, safeLimit);
             }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> withLiveLastBar(String symbol, Map<String, Object> payload) {
+        String liveLastStr = streamHub.latestLiveLastPrice(symbol, 2_000L);
+        if (liveLastStr == null || payload == null) {
+            return payload;
+        }
+        Object rawBarsObj = payload.get("bars");
+        if (!(rawBarsObj instanceof List<?> rawBars) || rawBars.isEmpty()) {
+            return payload;
+        }
+        Object lastObj = rawBars.get(rawBars.size() - 1);
+        if (!(lastObj instanceof Map<?, ?> lastRaw) || Boolean.TRUE.equals(lastRaw.get("closed"))) {
+            return payload;
+        }
+        try {
+            BigDecimal liveDec = new BigDecimal(liveLastStr);
+            BigDecimal highDec = new BigDecimal(String.valueOf(lastRaw.get("high")));
+            BigDecimal lowDec = new BigDecimal(String.valueOf(lastRaw.get("low")));
+            if (liveDec.signum() <= 0) {
+                return payload;
+            }
+            Map<String, Object> patchedLast = new LinkedHashMap<>((Map<String, Object>) lastRaw);
+            patchedLast.put("close", liveLastStr);
+            if (liveDec.compareTo(highDec) > 0) {
+                patchedLast.put("high", liveLastStr);
+            }
+            if (liveDec.compareTo(lowDec) < 0) {
+                patchedLast.put("low", liveLastStr);
+            }
+            List<Object> barsCopy = new ArrayList<>(rawBars);
+            barsCopy.set(barsCopy.size() - 1, patchedLast);
+            Map<String, Object> out = new LinkedHashMap<>(payload);
+            out.put("asOf", Instant.now().toString());
+            out.put("bars", barsCopy);
+            return out;
+        } catch (NumberFormatException ignored) {
+            return payload;
         }
     }
 
@@ -323,6 +383,7 @@ public class MarketController {
 
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@RequestParam(defaultValue = "BTCUSDT") String instrumentId) {
+        String symbol = sanitizeSymbol(instrumentId);
         if (activeStreams.incrementAndGet() > MAX_SSE_STREAMS) {
             activeStreams.decrementAndGet();
             throw new IllegalStateException("TOO_MANY_STREAMS");
@@ -333,16 +394,9 @@ public class MarketController {
                 activeStreams.decrementAndGet();
             }
         };
-        SseEmitter emitter = new SseEmitter(60_000L);
-        emitter.onCompletion(release);
-        emitter.onTimeout(release);
-        emitter.onError(ex -> release.run());
+        SseEmitter emitter = new SseEmitter(120_000L);
         try {
-            Map<String, Object> quote = getQuote(instrumentId);
-            emitter.send(SseEmitter.event()
-                    .name("price.tick")
-                    .id("live:" + quote.get("sequence"))
-                    .data(quote));
+            streamHub.subscribe(symbol, emitter, () -> getQuote(symbol), release);
         } catch (IOException ignored) {
             release.run();
             emitter.complete();
@@ -362,14 +416,15 @@ public class MarketController {
     }
 
     private List<Map<String, Object>> getOrFetchLiveTickers() {
+        streamHub.markWatchlistActive();
         long nowMs = System.currentTimeMillis();
-        if (!cachedTickers.isEmpty() && (nowMs - tickersCacheTimestampMs) < 3_500L) {
-            return cachedTickers;
+        if (!cachedTickers.isEmpty() && (nowMs - tickersCacheTimestampMs) < TICKERS_BASE_REFRESH_MS) {
+            return streamHub.overlayTickers(cachedTickers);
         }
         synchronized (this) {
             nowMs = System.currentTimeMillis();
-            if (!cachedTickers.isEmpty() && (nowMs - tickersCacheTimestampMs) < 3_500L) {
-                return cachedTickers;
+            if (!cachedTickers.isEmpty() && (nowMs - tickersCacheTimestampMs) < TICKERS_BASE_REFRESH_MS) {
+                return streamHub.overlayTickers(cachedTickers);
             }
             try {
                 Set<String> activeSymbols = getActivePerpSymbols();
@@ -386,8 +441,8 @@ public class MarketController {
                 List<Map<String, Object>> list = parseTickersList(tickers24h, premiumBySymbol, activeSymbols);
                 if (!list.isEmpty()) {
                     cachedTickers = List.copyOf(list);
-                    tickersCacheTimestampMs = nowMs;
-                    return cachedTickers;
+                    tickersCacheTimestampMs = System.currentTimeMillis();
+                    return streamHub.overlayTickers(cachedTickers);
                 }
             } catch (Exception primaryIgnored) {
                 // Bölge kısıtı (ör. US AWS HTTP 451) veya geçici kesintide global Binance Vision fallback
@@ -399,15 +454,15 @@ public class MarketController {
                             binanceVisionHttp.get(visionPath), Map.of(), Set.of());
                     if (!list.isEmpty()) {
                         cachedTickers = List.copyOf(list);
-                        tickersCacheTimestampMs = nowMs;
-                        return cachedTickers;
+                        tickersCacheTimestampMs = System.currentTimeMillis();
+                        return streamHub.overlayTickers(cachedTickers);
                     }
                 } catch (Exception fallbackIgnored) {
                     // Canlı kaynaklara erişilemezse önbellek veya yerel yedek liste döner
                 }
             }
             if (!cachedTickers.isEmpty()) {
-                return cachedTickers;
+                return streamHub.overlayTickers(cachedTickers);
             }
             return fallbackTickers();
         }
@@ -585,18 +640,7 @@ public class MarketController {
     }
 
     private static String normalizeDecimalString(String val) {
-        if (val == null || val.isBlank()) return "0";
-        if (!val.contains(".")) return val;
-        String trimmed = val.replaceAll("0+$", "");
-        if (trimmed.endsWith(".")) {
-            trimmed = trimmed + "00";
-        } else {
-            int dotIdx = trimmed.indexOf('.');
-            if (dotIdx >= 0 && trimmed.length() - dotIdx - 1 == 1) {
-                trimmed = trimmed + "0";
-            }
-        }
-        return trimmed;
+        return BinanceFuturesStreamHub.normalizeDecimalString(val);
     }
 
     private static String inferTickSize(double price) {

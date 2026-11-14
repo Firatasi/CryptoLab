@@ -1,4 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  classifyChartSeriesUpdate,
+  mergeLiveSnapshotIntoCandles,
+  useLiveMarketQuoteStream,
+  type ChartRenderMeta,
+  type LiveQuoteSnapshot,
+} from './liveMarketStream';
+import { formatChartCrosshairTime, formatChartTickMark } from './CandleChart';
+import { ConnectionStatusBadge } from '@/shared/ui/Feedback';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
@@ -6,6 +15,8 @@ import {
   ColorType,
   CrosshairMode,
   type IChartApi,
+  type ISeriesApi,
+  type TickMarkType,
   type Time,
 } from 'lightweight-charts';
 import {
@@ -26,6 +37,7 @@ import {
 } from '@/shared/formatting/formatters';
 import { useAuth } from '@/features/auth/AuthContext';
 import { Badge, Skeleton } from '@/shared/ui/Primitives';
+import { queryKeys } from '@/shared/api/queryKeys';
 import { cn } from '@/shared/ui/cn';
 import { marketApi, type BinanceTickerItem } from './api';
 
@@ -40,6 +52,16 @@ const INTERVALS: { value: CandleInterval; label: string }[] = [
 
 type WatchlistFilter = 'ALL' | 'GAINERS' | 'LOSERS' | 'VOLUME';
 type ChartStyle = 'CANDLE' | 'AREA';
+
+interface FormattedBar {
+  time: Time;
+  openTimeIso: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
 
 interface CrosshairLegend {
   timeText: string;
@@ -113,21 +135,39 @@ export function BinanceMarketTerminal() {
   const [canvasSupported, setCanvasSupported] = useState<boolean>(true);
 
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const areaSeriesRef = useRef<ISeriesApi<'Area'> | null>(null);
+  const ma7SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const ma25SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const lastFitKeyRef = useRef<string | null>(null);
+  const lastRenderedMetaRef = useRef<ChartRenderMeta | null>(null);
+  const barByTimeRef = useRef<Map<number, FormattedBar>>(new Map());
+  const ma7ByTimeRef = useRef<Map<number, number>>(new Map());
+  const ma25ByTimeRef = useRef<Map<number, number>>(new Map());
+  const timezoneRef = useRef(timezone);
+  timezoneRef.current = timezone;
 
   const tickersQuery = useQuery({
     queryKey: ['market', 'binance-tickers'],
     queryFn: ({ signal }) => marketApi.listTickers({ limit: 100, signal }),
-    refetchInterval: 5_000,
+    refetchInterval: 2_000,
+  });
+
+  const liveStream = useLiveMarketQuoteStream({
+    enabled: Boolean(selectedSymbol),
+    instrumentId: selectedSymbol,
   });
 
   const quoteQuery = useQuery({
-    queryKey: ['market', 'binance-quote', selectedSymbol],
+    queryKey: queryKeys.market.quote(selectedSymbol),
     queryFn: ({ signal }) => marketApi.getSnapshot(selectedSymbol, signal),
-    refetchInterval: 3_500,
+    refetchInterval: liveStream.status === 'LIVE' ? false : 1_500,
   });
 
   const candlesQuery = useQuery({
-    queryKey: ['market', 'binance-candles', selectedSymbol, interval],
+    queryKey: queryKeys.market.candles(selectedSymbol, interval),
     queryFn: ({ signal }) =>
       marketApi.getCandles(
         {
@@ -137,8 +177,13 @@ export function BinanceMarketTerminal() {
         },
         signal
       ),
-    refetchInterval: 5_000,
+    refetchInterval: 2_500,
   });
+
+  const liveCandles = useMemo(
+    () => mergeLiveSnapshotIntoCandles(candlesQuery.data, quoteQuery.data),
+    [candlesQuery.data, quoteQuery.data]
+  );
 
   const allTickers = useMemo(() => tickersQuery.data?.items ?? [], [tickersQuery.data]);
 
@@ -173,7 +218,7 @@ export function BinanceMarketTerminal() {
   }, [allTickers, searchQuery, watchlistFilter]);
 
   const formattedBars = useMemo(() => {
-    const rawBars = candlesQuery.data?.bars ?? [];
+    const rawBars = liveCandles?.bars ?? [];
     if (rawBars.length === 0) return [];
     const sorted = [...rawBars].sort(
       (a, b) => new Date(a.openTime).getTime() - new Date(b.openTime).getTime()
@@ -187,7 +232,7 @@ export function BinanceMarketTerminal() {
       close: toChartNumber(bar.close),
       volume: toChartNumber(bar.volume),
     }));
-  }, [candlesQuery.data]);
+  }, [liveCandles]);
 
   const ma7SeriesData = useMemo(() => computeSma(formattedBars, 7), [formattedBars]);
   const ma25SeriesData = useMemo(() => computeSma(formattedBars, 25), [formattedBars]);
@@ -212,9 +257,11 @@ export function BinanceMarketTerminal() {
     };
   }, [formattedBars, ma7SeriesData, ma25SeriesData, timezone]);
 
+  const hasChartData = !candlesQuery.isLoading && canvasSupported && formattedBars.length > 0;
+
   useEffect(() => {
     const el = chartContainerRef.current;
-    if (!el || formattedBars.length === 0) return;
+    if (!el || !hasChartData) return;
 
     let has2dCanvas = false;
     try {
@@ -246,6 +293,9 @@ export function BinanceMarketTerminal() {
         crosshair: {
           mode: CrosshairMode.Normal,
         },
+        localization: {
+          timeFormatter: (time: Time) => formatChartCrosshairTime(time, timezone),
+        },
         rightPriceScale: {
           borderColor: '#e5e5e5',
           scaleMargins: {
@@ -257,59 +307,52 @@ export function BinanceMarketTerminal() {
           borderColor: '#e5e5e5',
           timeVisible: true,
           secondsVisible: false,
+          tickMarkFormatter: (time: Time, tickMarkType: TickMarkType) =>
+            formatChartTickMark(time, tickMarkType, timezone),
         },
       });
 
+      chartRef.current = chart;
+      candleSeriesRef.current = null;
+      areaSeriesRef.current = null;
+      ma7SeriesRef.current = null;
+      ma25SeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      lastRenderedMetaRef.current = null;
+
       if (chartStyle === 'CANDLE') {
-        const candleSeries = chart.addCandlestickSeries({
+        candleSeriesRef.current = chart.addCandlestickSeries({
           upColor: '#0a0a0a',
           downColor: '#dc2626',
           borderVisible: false,
           wickUpColor: '#0a0a0a',
           wickDownColor: '#dc2626',
         });
-        candleSeries.setData(
-          formattedBars.map(({ time, open, high, low, close }) => ({
-            time,
-            open,
-            high,
-            low,
-            close,
-          }))
-        );
       } else {
-        const areaSeries = chart.addAreaSeries({
+        areaSeriesRef.current = chart.addAreaSeries({
           lineColor: '#0a0a0a',
           topColor: 'rgba(10, 10, 10, 0.14)',
           bottomColor: 'rgba(10, 10, 10, 0.0)',
           lineWidth: 2,
         });
-        areaSeries.setData(
-          formattedBars.map(({ time, close }) => ({
-            time,
-            value: close,
-          }))
-        );
       }
 
-      if (showMa7 && ma7SeriesData.length > 0) {
-        const ma7Line = chart.addLineSeries({
+      if (showMa7) {
+        ma7SeriesRef.current = chart.addLineSeries({
           color: '#525252',
           lineWidth: 1,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        ma7Line.setData(ma7SeriesData);
       }
 
-      if (showMa25 && ma25SeriesData.length > 0) {
-        const ma25Line = chart.addLineSeries({
+      if (showMa25) {
+        ma25SeriesRef.current = chart.addLineSeries({
           color: '#dc2626',
           lineWidth: 1,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        ma25Line.setData(ma25SeriesData);
       }
 
       if (showVolume) {
@@ -323,18 +366,8 @@ export function BinanceMarketTerminal() {
             bottom: 0,
           },
         });
-        volumeSeries.setData(
-          formattedBars.map((b) => ({
-            time: b.time,
-            value: b.volume,
-            color: b.close >= b.open ? 'rgba(10, 10, 10, 0.22)' : 'rgba(220, 38, 38, 0.25)',
-          }))
-        );
+        volumeSeriesRef.current = volumeSeries;
       }
-
-      const barByTime = new Map(formattedBars.map((b) => [Number(b.time), b]));
-      const ma7ByTime = new Map(ma7SeriesData.map((m) => [Number(m.time), m.value]));
-      const ma25ByTime = new Map(ma25SeriesData.map((m) => [Number(m.time), m.value]));
 
       chart.subscribeCrosshairMove((param) => {
         if (!param.time) {
@@ -342,26 +375,25 @@ export function BinanceMarketTerminal() {
           return;
         }
         const t = Number(param.time);
-        const bar = barByTime.get(t);
+        const bar = barByTimeRef.current.get(t);
         if (!bar) {
           setHoveredBar(null);
           return;
         }
         const changePct = bar.open > 0 ? ((bar.close - bar.open) / bar.open) * 100 : 0;
         setHoveredBar({
-          timeText: formatTimestamp(bar.openTimeIso, timezone),
+          timeText: formatTimestamp(bar.openTimeIso, timezoneRef.current),
           open: bar.open,
           high: bar.high,
           low: bar.low,
           close: bar.close,
           volume: bar.volume,
           changePct,
-          ma7: ma7ByTime.get(t) ?? null,
-          ma25: ma25ByTime.get(t) ?? null,
+          ma7: ma7ByTimeRef.current.get(t) ?? null,
+          ma25: ma25ByTimeRef.current.get(t) ?? null,
         });
       });
 
-      chart.timeScale().fitContent();
       setCanvasSupported(true);
     } catch {
       setCanvasSupported(false);
@@ -386,8 +418,137 @@ export function BinanceMarketTerminal() {
     return () => {
       resizeObserver?.disconnect();
       chart?.remove();
+      chartRef.current = null;
+      candleSeriesRef.current = null;
+      areaSeriesRef.current = null;
+      ma7SeriesRef.current = null;
+      ma25SeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      lastRenderedMetaRef.current = null;
     };
+  }, [hasChartData, chartStyle, showMa7, showMa25, showVolume, timezone]);
+
+  useEffect(() => {
+    barByTimeRef.current = new Map(formattedBars.map((b) => [Number(b.time), b]));
+    ma7ByTimeRef.current = new Map(ma7SeriesData.map((m) => [Number(m.time), m.value]));
+    ma25ByTimeRef.current = new Map(ma25SeriesData.map((m) => [Number(m.time), m.value]));
+
+    if (!hasChartData || formattedBars.length === 0) {
+      lastRenderedMetaRef.current = null;
+      return;
+    }
+
+    const activeSeries =
+      chartStyle === 'CANDLE' ? candleSeriesRef.current : areaSeriesRef.current;
+    if (!activeSeries) {
+      return;
+    }
+
+    const fitKey = `${selectedSymbol}:${interval}:${chartStyle}:${showMa7}:${showMa25}:${showVolume}:${timezone}`;
+    const firstTime = Number(formattedBars[0].time);
+    const lastBar = formattedBars[formattedBars.length - 1];
+    const lastTime = Number(lastBar.time);
+    const prevLastTime =
+      formattedBars.length >= 2 ? Number(formattedBars[formattedBars.length - 2].time) : null;
+
+    const { mode, nextMeta } = classifyChartSeriesUpdate(
+      lastRenderedMetaRef.current,
+      fitKey,
+      activeSeries,
+      firstTime,
+      prevLastTime,
+      lastTime,
+      formattedBars.length
+    );
+
+    const pushBarUpdate = (bar: FormattedBar) => {
+      if (chartStyle === 'CANDLE' && candleSeriesRef.current) {
+        candleSeriesRef.current.update({
+          time: bar.time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+        });
+      } else if (chartStyle === 'AREA' && areaSeriesRef.current) {
+        areaSeriesRef.current.update({
+          time: bar.time,
+          value: bar.close,
+        });
+      }
+      if (showVolume && volumeSeriesRef.current) {
+        volumeSeriesRef.current.update({
+          time: bar.time,
+          value: bar.volume,
+          color: bar.close >= bar.open ? 'rgba(10, 10, 10, 0.22)' : 'rgba(220, 38, 38, 0.25)',
+        });
+      }
+      const barT = Number(bar.time);
+      const ma7Val = ma7ByTimeRef.current.get(barT);
+      if (showMa7 && ma7SeriesRef.current && ma7Val !== undefined) {
+        ma7SeriesRef.current.update({ time: bar.time, value: ma7Val });
+      }
+      const ma25Val = ma25ByTimeRef.current.get(barT);
+      if (showMa25 && ma25SeriesRef.current && ma25Val !== undefined) {
+        ma25SeriesRef.current.update({ time: bar.time, value: ma25Val });
+      }
+    };
+
+    if (mode === 'update-last') {
+      pushBarUpdate(lastBar);
+      return;
+    }
+
+    if (mode === 'append-one') {
+      pushBarUpdate(formattedBars[formattedBars.length - 2]);
+      pushBarUpdate(lastBar);
+      lastRenderedMetaRef.current = nextMeta;
+      return;
+    }
+
+    if (chartStyle === 'CANDLE' && candleSeriesRef.current) {
+      candleSeriesRef.current.setData(
+        formattedBars.map(({ time, open, high, low, close }) => ({
+          time,
+          open,
+          high,
+          low,
+          close,
+        }))
+      );
+    } else if (chartStyle === 'AREA' && areaSeriesRef.current) {
+      areaSeriesRef.current.setData(
+        formattedBars.map(({ time, close }) => ({
+          time,
+          value: close,
+        }))
+      );
+    }
+
+    if (showMa7 && ma7SeriesRef.current) {
+      ma7SeriesRef.current.setData(ma7SeriesData);
+    }
+    if (showMa25 && ma25SeriesRef.current) {
+      ma25SeriesRef.current.setData(ma25SeriesData);
+    }
+    if (showVolume && volumeSeriesRef.current) {
+      volumeSeriesRef.current.setData(
+        formattedBars.map((b) => ({
+          time: b.time,
+          value: b.volume,
+          color: b.close >= b.open ? 'rgba(10, 10, 10, 0.22)' : 'rgba(220, 38, 38, 0.25)',
+        }))
+      );
+    }
+
+    lastRenderedMetaRef.current = nextMeta;
+
+    if (lastFitKeyRef.current !== fitKey) {
+      lastFitKeyRef.current = fitKey;
+      chartRef.current?.timeScale().fitContent();
+    }
   }, [
+    hasChartData,
     formattedBars,
     ma7SeriesData,
     ma25SeriesData,
@@ -396,10 +557,12 @@ export function BinanceMarketTerminal() {
     showMa25,
     showVolume,
     timezone,
+    selectedSymbol,
+    interval,
   ]);
 
   const activeLegend = hoveredBar ?? defaultLegend;
-  const quote = quoteQuery.data;
+  const quote = quoteQuery.data as LiveQuoteSnapshot | undefined;
 
   const displayLastPrice = quote?.lastPrice ?? activeTicker?.lastPrice ?? '0';
   const displayMarkPrice = quote?.markPrice ?? activeTicker?.markPrice ?? '0';
@@ -407,11 +570,11 @@ export function BinanceMarketTerminal() {
   const displayBid = quote?.bid ?? displayLastPrice;
   const displayAsk = quote?.ask ?? displayLastPrice;
   const displayFunding = quote?.fundingRate ?? activeTicker?.fundingRate ?? '0.00010000';
-  const displayChangePct = Number(activeTicker?.priceChangePercent ?? 0);
-  const displayChangeAbs = activeTicker?.priceChange ?? '0';
-  const displayHigh = activeTicker?.highPrice ?? displayLastPrice;
-  const displayLow = activeTicker?.lowPrice ?? displayLastPrice;
-  const displayVolQuote = activeTicker?.quoteVolume ?? '0';
+  const displayChangePct = Number(quote?.priceChangePercent ?? activeTicker?.priceChangePercent ?? 0);
+  const displayChangeAbs = quote?.priceChange ?? activeTicker?.priceChange ?? '0';
+  const displayHigh = quote?.high24h ?? activeTicker?.highPrice ?? displayLastPrice;
+  const displayLow = quote?.low24h ?? activeTicker?.lowPrice ?? displayLastPrice;
+  const displayVolQuote = quote?.quoteVolume24h ?? activeTicker?.quoteVolume ?? '0';
   const isPositive24h = displayChangePct >= 0;
 
   return (
@@ -424,6 +587,7 @@ export function BinanceMarketTerminal() {
               <Activity className="h-3.5 w-3.5 text-white" aria-hidden="true" />
               BINANCE USD-M PERPETUAL CANLI TERMİNAL
             </span>
+            <ConnectionStatusBadge state={liveStream.status} />
           </div>
 
           <div className="flex items-center gap-2">

@@ -10,6 +10,7 @@ import {
 import { AlertTriangle, BarChart2, TrendingUp } from 'lucide-react';
 import type { CandleInterval, CandleSeriesResponse } from '@/shared/contracts/types';
 import { toChartNumber } from '@/shared/formatting/chartNumber';
+import { classifyChartSeriesUpdate, type ChartRenderMeta } from './liveMarketStream';
 import {
   formatPrice,
   formatTimestamp,
@@ -143,6 +144,7 @@ export function CandleChart({
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const areaSeriesRef = useRef<ISeriesApi<'Area'> | null>(null);
   const lastFitKeyRef = useRef<string | null>(null);
+  const lastRenderedMetaRef = useRef<ChartRenderMeta | null>(null);
   const [canvasSupported, setCanvasSupported] = useState(true);
   const [chartStyle, setChartStyle] = useState<ChartStyle>('CANDLE');
 
@@ -261,7 +263,63 @@ export function CandleChart({
   }, [hasBars, height, chartStyle, timezone]);
 
   useEffect(() => {
-    if (formattedBars.length === 0) return;
+    if (formattedBars.length === 0) {
+      lastRenderedMetaRef.current = null;
+      return;
+    }
+
+    const activeSeries =
+      chartStyle === 'CANDLE' ? candleSeriesRef.current : areaSeriesRef.current;
+    if (!activeSeries) {
+      return;
+    }
+
+    const fitKey = `${series?.instrumentId ?? ''}:${interval}:${chartStyle}:${timezone}`;
+    const firstTime = Number(formattedBars[0].time);
+    const lastBar = formattedBars[formattedBars.length - 1];
+    const lastTime = Number(lastBar.time);
+    const prevLastTime =
+      formattedBars.length >= 2 ? Number(formattedBars[formattedBars.length - 2].time) : null;
+
+    const { mode, nextMeta } = classifyChartSeriesUpdate(
+      lastRenderedMetaRef.current,
+      fitKey,
+      activeSeries,
+      firstTime,
+      prevLastTime,
+      lastTime,
+      formattedBars.length
+    );
+
+    const pushSingleBar = (bar: (typeof formattedBars)[number]) => {
+      if (chartStyle === 'CANDLE' && candleSeriesRef.current) {
+        candleSeriesRef.current.update({
+          time: bar.time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+        });
+      } else if (chartStyle === 'AREA' && areaSeriesRef.current) {
+        areaSeriesRef.current.update({
+          time: bar.time,
+          value: bar.close,
+        });
+      }
+    };
+
+    if (mode === 'update-last') {
+      pushSingleBar(lastBar);
+      return;
+    }
+
+    if (mode === 'append-one') {
+      pushSingleBar(formattedBars[formattedBars.length - 2]);
+      pushSingleBar(lastBar);
+      lastRenderedMetaRef.current = nextMeta;
+      return;
+    }
+
     if (chartStyle === 'CANDLE' && candleSeriesRef.current) {
       candleSeriesRef.current.setData(
         formattedBars.map(({ time, open, high, low, close }) => ({
@@ -283,7 +341,8 @@ export function CandleChart({
       return;
     }
 
-    const fitKey = `${series?.instrumentId ?? ''}:${interval}:${chartStyle}:${timezone}`;
+    lastRenderedMetaRef.current = nextMeta;
+
     if (lastFitKeyRef.current !== fitKey) {
       lastFitKeyRef.current = fitKey;
       chartRef.current?.timeScale().fitContent();

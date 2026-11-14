@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowRight, BrainCircuit } from 'lucide-react';
@@ -8,12 +8,12 @@ import { useAuth } from '@/features/auth/AuthContext';
 import { loadPersistedJobs } from '@/shared/storage/jobPersistence';
 import { formatDecimal, formatReasonCode } from '@/shared/formatting/formatters';
 import { Badge, Button, Card, CardHeader } from '@/shared/ui/Primitives';
-import { useManagedSseStream } from '@/shared/stream/useManagedSseStream';
 import { ConnectionStatusBadge } from '@/shared/ui/Feedback';
 import { marketApi } from './api';
 import { InstrumentSelector } from './InstrumentSelector';
 import { PriceCard } from './PriceCard';
 import { CandleChart } from './CandleChart';
+import { mergeLiveSnapshotIntoCandles, useLiveMarketQuoteStream } from './liveMarketStream';
 
 export function MarketPage() {
   const { user, timezone } = useAuth();
@@ -23,17 +23,16 @@ export function MarketPage() {
   const selectedId = selectedInstrument?.instrumentId ?? searchParams.get('instrumentId');
   const intervalParam = (searchParams.get('interval') as CandleInterval | null) ?? '15m';
 
-  const stream = useManagedSseStream({
+  const stream = useLiveMarketQuoteStream({
     enabled: Boolean(selectedId),
-    path: selectedId ? `/market/stream?instrumentId=${encodeURIComponent(selectedId)}` : null,
-    resyncQueryKeys: selectedId ? [queryKeys.market.quote(selectedId)] : [],
+    instrumentId: selectedId,
   });
 
   const quoteQuery = useQuery({
     queryKey: queryKeys.market.quote(selectedId ?? ''),
     queryFn: ({ signal }) => marketApi.getSnapshot(selectedId!, signal),
     enabled: Boolean(selectedId),
-    refetchInterval: stream.status === 'LIVE' ? false : 8_000,
+    refetchInterval: stream.status === 'LIVE' ? false : 2_000,
   });
 
   const candlesQuery = useQuery({
@@ -41,7 +40,13 @@ export function MarketPage() {
     queryFn: ({ signal }) =>
       marketApi.getCandles({ instrumentId: selectedId!, interval: intervalParam }, signal),
     enabled: Boolean(selectedId),
+    refetchInterval: 3_000,
   });
+
+  const liveCandles = useMemo(
+    () => mergeLiveSnapshotIntoCandles(candlesQuery.data, quoteQuery.data),
+    [candlesQuery.data, quoteQuery.data]
+  );
 
   const activeSessionId = loadPersistedJobs(user?.id).activeSessionId;
 
@@ -124,7 +129,7 @@ export function MarketPage() {
           />
 
           <CandleChart
-            series={candlesQuery.data}
+            series={liveCandles}
             interval={intervalParam}
             onIntervalChange={handleIntervalChange}
             loading={candlesQuery.isLoading}

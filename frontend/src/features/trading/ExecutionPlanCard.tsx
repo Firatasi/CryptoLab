@@ -6,10 +6,17 @@ import {
   formatMoney,
   formatPrice,
   formatQuantity,
+  formatSignedMoney,
   formatTimestamp,
   type TimezonePreference,
 } from '@/shared/formatting/formatters';
 import { Badge, Button, SideBadge } from '@/shared/ui/Primitives';
+import {
+  estimateSizingFromOpenPosition,
+  formatFixedDecimal,
+  parseFiniteDecimal,
+  pnlUsdFromTriggerPrice,
+} from './orderBracketMath';
 
 export interface ExecutionPlanCardProps {
   plan: ExecutionPlan;
@@ -50,6 +57,22 @@ export function ExecutionPlanCard({
   }, [plan.validUntil]);
 
   const isClientExpired = remainingSec <= 0;
+  const planSizing = estimateSizingFromOpenPosition({
+    side: plan.side,
+    quantity: parseFiniteDecimal(plan.quantity),
+    entryPrice: parseFiniteDecimal(plan.limitPrice ?? plan.referenceEntry),
+    margin: parseFiniteDecimal(plan.marginRequired),
+  });
+  const slTrigger = parseFiniteDecimal(plan.stopLoss);
+  const tpTrigger = parseFiniteDecimal(plan.takeProfit);
+  const slUsd =
+    planSizing && slTrigger !== null
+      ? pnlUsdFromTriggerPrice(plan.side, planSizing, slTrigger, 'SL')
+      : null;
+  const tpUsd =
+    planSizing && tpTrigger !== null
+      ? pnlUsdFromTriggerPrice(plan.side, planSizing, tpTrigger, 'TP')
+      : null;
 
   return (
     <div
@@ -118,12 +141,18 @@ export function ExecutionPlanCard({
           <div className="mt-0.5 truncate font-semibold text-[#dc2626]">
             {formatPrice(plan.estimatedLiquidationPrice)}
           </div>
+          <div className="mt-0.5 truncate font-sans text-[10px] text-[#dc2626]/80">
+            Risk edilen marjin: {formatMoney(plan.marginRequired, currency, 2)} ({plan.leverage}x)
+          </div>
         </div>
 
         <div className="col-span-2 min-w-0 rounded-none border border-[#e5e5e5] bg-white p-2">
           <div className="truncate font-sans text-[11px] text-[#737373]">Zarar Durdur / Kâr Al (SL / TP)</div>
           <div className="mt-0.5 truncate text-[#0a0a0a]">
-            SL: {formatPrice(plan.stopLoss)} · TP: {formatPrice(plan.takeProfit)}
+            SL: {formatPrice(plan.stopLoss)}
+            {slUsd !== null ? ` (${formatSignedMoney(`-${formatFixedDecimal(slUsd, 2)}`, currency, 2)})` : ''} ·{' '}
+            TP: {formatPrice(plan.takeProfit)}
+            {tpUsd !== null ? ` (${formatSignedMoney(formatFixedDecimal(tpUsd, 2), currency, 2)})` : ''}
           </div>
         </div>
 
