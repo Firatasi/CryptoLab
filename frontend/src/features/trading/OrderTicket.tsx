@@ -30,7 +30,13 @@ import {
   toDecimalInputString,
 } from '@/shared/formatting/decimalParser';
 import { getEffectiveMaxLeverage } from '@/features/sessions/sessionProfiles';
-import { formatPrice, type TimezonePreference } from '@/shared/formatting/formatters';
+import {
+  formatMoney,
+  formatPrice,
+  formatQuantity,
+  formatSignedMoney,
+  type TimezonePreference,
+} from '@/shared/formatting/formatters';
 import { Badge, Button, Card, CardHeader } from '@/shared/ui/Primitives';
 import { DecimalInput, FieldGroup, SelectInput } from '@/shared/ui/FormControls';
 import { ErrorBanner } from '@/shared/ui/Feedback';
@@ -39,7 +45,8 @@ import { tradingApi } from './api';
 import { ExecutionPlanCard } from './ExecutionPlanCard';
 import {
   type BracketInputMode,
-  estimateOrderSizing,
+  type OrderSizingDiagnosis,
+  diagnoseOrderSizing,
   formatFixedDecimal,
   parseFiniteDecimal,
   pnlUsdFromTriggerPrice,
@@ -189,102 +196,45 @@ export function OrderTicket({
     return seedRef !== null && seedRef > 0 ? seedRef : null;
   }, [aiProposalSeed?.referenceEntry, limitPrice, marketSnapshot?.markPrice, orderType]);
 
-  const orderSizing = useMemo(() => {
-    return estimateOrderSizing({
+  const sizingDiagnosis = useMemo(() => {
+    return diagnoseOrderSizing({
       side,
       entryPrice: effectiveEntryPrice,
       marginBudget: parseFiniteDecimal(marginBudget),
       leverage: parseFiniteDecimal(leverage),
+      minNotionalUsd: parseFiniteDecimal(instrument?.minNotional ?? null) ?? undefined,
     });
-  }, [effectiveEntryPrice, leverage, marginBudget, side]);
+  }, [effectiveEntryPrice, instrument?.minNotional, leverage, marginBudget, side]);
 
-  const resolvedSl = useMemo(() => {
-    const raw = stopLoss.trim();
-    if (!raw) {
-      return { priceStr: null as string | null, usdEstimate: null as number | null, error: null as string | null };
-    }
-    if (slMode === 'USDT') {
-      const parsedUsd = parsePositiveDecimalInput(stopLoss, 2);
-      if (!parsedUsd.valid) {
-        return { priceStr: null, usdEstimate: null, error: `Zarar tutarı: ${parsedUsd.message}` };
-      }
-      if (!orderSizing) {
-        return {
-          priceStr: null,
-          usdEstimate: Number(parsedUsd.normalized),
-          error: effectiveEntryPrice
-            ? 'USDT zarar hesaplamak için geçerli bir teminat bütçesi ve kaldıraç girin.'
-            : 'USDT zarar hesabı için piyasa fiyatı bekleniyor veya Limit fiyat girin.',
-        };
-      }
-      const conv = stopLossPriceFromUsd(side, orderSizing, Number(parsedUsd.normalized));
-      if (conv.error || conv.price === null) {
-        return { priceStr: null, usdEstimate: Number(parsedUsd.normalized), error: conv.error };
-      }
-      return {
-        priceStr: formatFixedDecimal(conv.price, stepDecimals(orderSizing.tickSize)),
-        usdEstimate: Number(parsedUsd.normalized),
-        error: null,
-      };
-    }
+  const orderSizing = sizingDiagnosis.ok ? sizingDiagnosis.estimate : null;
 
-    const parsedPrice = parsePositiveDecimalInput(stopLoss, 8);
-    if (!parsedPrice.valid) {
-      return { priceStr: null, usdEstimate: null, error: `Stop-Loss: ${parsedPrice.message}` };
-    }
-    const numPrice = Number(parsedPrice.normalized);
-    const liqErr = validateStopLossPriceAgainstLiquidation(side, orderSizing, numPrice);
-    const usdEst = orderSizing ? pnlUsdFromTriggerPrice(side, orderSizing, numPrice, 'SL') : null;
-    return {
-      priceStr: parsedPrice.normalized,
-      usdEstimate: usdEst,
-      error: liqErr,
-    };
-  }, [effectiveEntryPrice, orderSizing, side, slMode, stopLoss]);
+  const resolvedSl = useMemo(
+    () =>
+      resolveBracketValue({
+        kind: 'SL',
+        rawValue: stopLoss,
+        mode: slMode,
+        side,
+        effectiveEntryPrice,
+        sizingDiagnosis,
+        baseAsset: instrument?.baseAsset,
+      }),
+    [effectiveEntryPrice, instrument?.baseAsset, side, sizingDiagnosis, slMode, stopLoss]
+  );
 
-  const resolvedTp = useMemo(() => {
-    const raw = takeProfit.trim();
-    if (!raw) {
-      return { priceStr: null as string | null, usdEstimate: null as number | null, error: null as string | null };
-    }
-    if (tpMode === 'USDT') {
-      const parsedUsd = parsePositiveDecimalInput(takeProfit, 2);
-      if (!parsedUsd.valid) {
-        return { priceStr: null, usdEstimate: null, error: `Kâr hedefi: ${parsedUsd.message}` };
-      }
-      if (!orderSizing) {
-        return {
-          priceStr: null,
-          usdEstimate: Number(parsedUsd.normalized),
-          error: effectiveEntryPrice
-            ? 'USDT kâr hedefi hesaplamak için geçerli bir teminat bütçesi ve kaldıraç girin.'
-            : 'USDT kâr hesabı için piyasa fiyatı bekleniyor veya Limit fiyat girin.',
-        };
-      }
-      const conv = takeProfitPriceFromUsd(side, orderSizing, Number(parsedUsd.normalized));
-      if (conv.error || conv.price === null) {
-        return { priceStr: null, usdEstimate: Number(parsedUsd.normalized), error: conv.error };
-      }
-      return {
-        priceStr: formatFixedDecimal(conv.price, stepDecimals(orderSizing.tickSize)),
-        usdEstimate: Number(parsedUsd.normalized),
-        error: null,
-      };
-    }
-
-    const parsedPrice = parsePositiveDecimalInput(takeProfit, 8);
-    if (!parsedPrice.valid) {
-      return { priceStr: null, usdEstimate: null, error: `Take-Profit: ${parsedPrice.message}` };
-    }
-    const usdEst = orderSizing
-      ? pnlUsdFromTriggerPrice(side, orderSizing, Number(parsedPrice.normalized), 'TP')
-      : null;
-    return {
-      priceStr: parsedPrice.normalized,
-      usdEstimate: usdEst,
-      error: null,
-    };
-  }, [effectiveEntryPrice, orderSizing, side, takeProfit, tpMode]);
+  const resolvedTp = useMemo(
+    () =>
+      resolveBracketValue({
+        kind: 'TP',
+        rawValue: takeProfit,
+        mode: tpMode,
+        side,
+        effectiveEntryPrice,
+        sizingDiagnosis,
+        baseAsset: instrument?.baseAsset,
+      }),
+    [effectiveEntryPrice, instrument?.baseAsset, side, sizingDiagnosis, takeProfit, tpMode]
+  );
 
   /**
    * F04.4 & F07.4: Kullanıcı herhangi bir alanı değiştirdiğinde eski plan geçersiz kılınır;
@@ -305,39 +255,38 @@ export function OrderTicket({
     submitKeyTrackerRef.current.reset();
   };
 
-  const switchSlMode = (nextMode: BracketInputMode) => {
-    if (nextMode === slMode) return;
-    if (stopLoss.trim() && orderSizing) {
-      if (nextMode === 'USDT' && resolvedSl.priceStr) {
-        const usd = pnlUsdFromTriggerPrice(side, orderSizing, Number(resolvedSl.priceStr), 'SL');
-        if (usd !== null) {
-          setStopLoss(formatFixedDecimal(usd, 2));
-        }
-      } else if (nextMode === 'PRICE' && resolvedSl.priceStr) {
-        setStopLoss(resolvedSl.priceStr);
+  const switchBracketMode = (
+    kind: 'SL' | 'TP',
+    currentMode: BracketInputMode,
+    nextMode: BracketInputMode,
+    rawValue: string,
+    resolved: ResolvedBracket,
+    setValue: (next: string) => void,
+    setMode: (mode: BracketInputMode) => void,
+  ) => {
+    if (nextMode === currentMode) return;
+    if (rawValue.trim()) {
+      if (nextMode === 'USDT') {
+        const usd =
+          orderSizing && resolved.priceStr
+            ? pnlUsdFromTriggerPrice(side, orderSizing, Number(resolved.priceStr), kind)
+            : null;
+        // Sizing hesaplanamiyorsa ham varlik fiyatini (orn. 88500) USDT tutari sanmamak icin temizle.
+        setValue(usd !== null ? formatFixedDecimal(usd, 2) : '');
+      } else {
+        setValue(orderSizing && resolved.priceStr ? resolved.priceStr : '');
       }
     }
-    setSlMode(nextMode);
+    setMode(nextMode);
     setValidationError(null);
     setApiError(null);
   };
 
-  const switchTpMode = (nextMode: BracketInputMode) => {
-    if (nextMode === tpMode) return;
-    if (takeProfit.trim() && orderSizing) {
-      if (nextMode === 'USDT' && resolvedTp.priceStr) {
-        const usd = pnlUsdFromTriggerPrice(side, orderSizing, Number(resolvedTp.priceStr), 'TP');
-        if (usd !== null) {
-          setTakeProfit(formatFixedDecimal(usd, 2));
-        }
-      } else if (nextMode === 'PRICE' && resolvedTp.priceStr) {
-        setTakeProfit(resolvedTp.priceStr);
-      }
-    }
-    setTpMode(nextMode);
-    setValidationError(null);
-    setApiError(null);
-  };
+  const switchSlMode = (nextMode: BracketInputMode) =>
+    switchBracketMode('SL', slMode, nextMode, stopLoss, resolvedSl, setStopLoss, setSlMode);
+
+  const switchTpMode = (nextMode: BracketInputMode) =>
+    switchBracketMode('TP', tpMode, nextMode, takeProfit, resolvedTp, setTakeProfit, setTpMode);
 
   // 202 ACCEPTED sonrası komut durumu sorgulama (F04.6)
   const commandQuery = useQuery({
@@ -775,7 +724,15 @@ export function OrderTicket({
           </div>
 
           <div className="grid grid-cols-2 gap-2.5">
-            <FieldGroup label="Teminat Bütçesi" required>
+            <FieldGroup
+              label="Teminat Bütçesi"
+              hint={
+                source === 'AI_PROPOSAL' && originProposalId
+                  ? 'AI önerisi bütçesi sunucu risk politikasına göre belirlenir; kendi bütçeniz için tutarı düzenleyin.'
+                  : undefined
+              }
+              required
+            >
               {(id) => (
                 <DecimalInput
                   id={id}
@@ -849,7 +806,11 @@ export function OrderTicket({
                             ? ` · Maks. ${orderSizing.maxSafeStopLossUsd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} USDT`
                             : ''
                         }`
-                      : undefined
+                      : !sizingDiagnosis.ok &&
+                          sizingDiagnosis.reason === 'BELOW_MIN_STEP_OR_NOTIONAL' &&
+                          stopLoss.trim()
+                        ? 'Min. lot altı · Zarar tahmini için teminat/kaldıracı artırın'
+                        : undefined
                   : undefined
               }
               rightAddon={
@@ -907,7 +868,11 @@ export function OrderTicket({
                       : 'Örn: 10 → 10 USDT kârda kapat'
                     : resolvedTp.usdEstimate !== null
                       ? `Tahmini kâr: ~+${resolvedTp.usdEstimate.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`
-                      : undefined
+                      : !sizingDiagnosis.ok &&
+                          sizingDiagnosis.reason === 'BELOW_MIN_STEP_OR_NOTIONAL' &&
+                          takeProfit.trim()
+                        ? 'Min. lot altı · Kâr tahmini için teminat/kaldıracı artırın'
+                        : undefined
                   : undefined
               }
               rightAddon={
@@ -992,6 +957,138 @@ export function OrderTicket({
             </FieldGroup>
           </div>
 
+          {instrument &&
+            effectiveEntryPrice !== null &&
+            (sizingDiagnosis.ok || sizingDiagnosis.reason === 'BELOW_MIN_STEP_OR_NOTIONAL') && (
+              <div
+                data-testid="live-order-summary"
+                className="rounded-none border border-[#e5e5e5] bg-[#f5f5f5] p-3 text-xs space-y-2"
+              >
+                {sizingDiagnosis.ok ? (
+                  <>
+                    <div className="flex items-center justify-between gap-2 border-b border-[#e5e5e5] pb-1.5">
+                      <span className="font-semibold text-[#0a0a0a]">Canlı Pozisyon ve Risk Özeti</span>
+                      <span className="font-mono text-[11px] text-[#525252]">
+                        Giriş ~
+                        {formatPrice(
+                          formatFixedDecimal(
+                            sizingDiagnosis.estimate.entryPrice,
+                            stepDecimals(sizingDiagnosis.estimate.tickSize)
+                          )
+                        )}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 font-mono tabular-nums">
+                      <div className="min-w-0">
+                        <div className="font-sans text-[10px] text-[#737373]">Miktar</div>
+                        <div
+                          data-testid="live-summary-quantity"
+                          className="truncate font-semibold text-[#0a0a0a]"
+                        >
+                          {formatQuantity(
+                            formatFixedDecimal(
+                              sizingDiagnosis.estimate.quantity,
+                              stepDecimals(sizingDiagnosis.estimate.stepSize)
+                            ),
+                            instrument.baseAsset
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="min-w-0">
+                        <div className="font-sans text-[10px] text-[#737373]">Pozisyon Büyüklüğü</div>
+                        <div
+                          data-testid="live-summary-notional"
+                          className="truncate font-semibold text-[#0a0a0a]"
+                        >
+                          {formatMoney(
+                            formatFixedDecimal(sizingDiagnosis.estimate.notional, 2),
+                            instrument.settlementAsset || instrument.quoteAsset || 'USDT',
+                            2
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="min-w-0">
+                        <div className="font-sans text-[10px] text-[#737373]">Kullanılan Teminat</div>
+                        <div
+                          data-testid="live-summary-margin"
+                          className="truncate font-semibold text-[#0a0a0a]"
+                        >
+                          {formatMoney(
+                            formatFixedDecimal(sizingDiagnosis.estimate.margin, 2),
+                            instrument.settlementAsset || instrument.quoteAsset || 'USDT',
+                            2
+                          )}{' '}
+                          ({leverage}x)
+                        </div>
+                      </div>
+
+                      <div className="min-w-0">
+                        <div className="font-sans text-[10px] text-[#737373]">Tahmini Likidasyon</div>
+                        <div
+                          data-testid="live-summary-liq"
+                          className="truncate font-semibold text-[#dc2626]"
+                        >
+                          {sizingDiagnosis.estimate.estimatedLiquidationPrice !== null
+                            ? formatPrice(
+                                formatFixedDecimal(
+                                  sizingDiagnosis.estimate.estimatedLiquidationPrice,
+                                  stepDecimals(sizingDiagnosis.estimate.tickSize)
+                                )
+                              )
+                            : '—'}
+                        </div>
+                      </div>
+                    </div>
+
+                    {(stopLoss.trim() || takeProfit.trim()) && (
+                      <div
+                        data-testid="live-summary-brackets"
+                        className="flex flex-wrap items-center justify-between gap-2 border-t border-[#e5e5e5] pt-1.5 font-mono text-[11px] tabular-nums"
+                      >
+                        <span className="text-[#dc2626]">
+                          SL:{' '}
+                          {!resolvedSl.error && resolvedSl.usdEstimate !== null
+                            ? formatSignedMoney(
+                                `-${formatFixedDecimal(resolvedSl.usdEstimate, 2)}`,
+                                instrument.settlementAsset || instrument.quoteAsset || 'USDT',
+                                2
+                              )
+                            : '—'}
+                        </span>
+                        <span className="text-[#059669]">
+                          TP:{' '}
+                          {!resolvedTp.error && resolvedTp.usdEstimate !== null
+                            ? formatSignedMoney(
+                                formatFixedDecimal(resolvedTp.usdEstimate, 2),
+                                instrument.settlementAsset || instrument.quoteAsset || 'USDT',
+                                2
+                              )
+                            : '—'}
+                        </span>
+                      </div>
+                    )}
+
+                    <p className="text-[11px] leading-snug text-[#525252]">
+                      İzole marjinde aynı kaldıraçta tasfiye fiyatı girişe göre sabit % mesafede kalır;
+                      bütçeyle değişen değerler miktar, risk edilen marjin ve SL/TP{' '}
+                      {instrument.settlementAsset || instrument.quoteAsset || 'USDT'} sonucudur.
+                    </p>
+                  </>
+                ) : (
+                  <div
+                    data-testid="live-summary-min-budget"
+                    className="flex items-start gap-2 text-[#b45309]"
+                  >
+                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span>{buildMinBudgetMessage(sizingDiagnosis, instrument.baseAsset)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
           {validationError && (
             <div
               role="alert"
@@ -1046,4 +1143,101 @@ export function OrderTicket({
       </div>
     </Card>
   );
+}
+
+interface ResolvedBracket {
+  priceStr: string | null;
+  usdEstimate: number | null;
+  error: string | null;
+}
+
+function buildMinBudgetMessage(
+  diagnosis: Extract<OrderSizingDiagnosis, { ok: false }>,
+  baseAsset = 'birim',
+): string {
+  if (diagnosis.reason === 'BELOW_MIN_STEP_OR_NOTIONAL') {
+    const minMargin = formatMoney(
+      diagnosis.minMarginBudgetUsd !== null ? formatFixedDecimal(diagnosis.minMarginBudgetUsd, 2) : null,
+      'USDT',
+      2,
+    );
+    const minNotional = formatMoney(
+      diagnosis.minNotionalUsd !== null ? formatFixedDecimal(diagnosis.minNotionalUsd, 2) : null,
+      'USDT',
+      2,
+    );
+    const stepStr =
+      diagnosis.stepSize !== null
+        ? formatQuantity(formatFixedDecimal(diagnosis.stepSize, stepDecimals(diagnosis.stepSize)), baseAsset)
+        : baseAsset;
+    return `Minimum işlem adımı (${stepStr} · ~${minNotional}) için en az ~${minMargin} teminat bütçesi veya daha yüksek kaldıraç gerekir.`;
+  }
+  return 'Geçerli bir piyasa fiyatı, teminat bütçesi ve kaldıraç girin.';
+}
+
+function resolveBracketValue(params: {
+  kind: 'SL' | 'TP';
+  rawValue: string;
+  mode: BracketInputMode;
+  side: PositionSide;
+  effectiveEntryPrice: number | null;
+  sizingDiagnosis: OrderSizingDiagnosis;
+  baseAsset?: string;
+}): ResolvedBracket {
+  const { kind, rawValue, mode, side, effectiveEntryPrice, sizingDiagnosis, baseAsset } = params;
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return { priceStr: null, usdEstimate: null, error: null };
+  }
+
+  const sizing = sizingDiagnosis.ok ? sizingDiagnosis.estimate : null;
+  const isSl = kind === 'SL';
+
+  if (mode === 'USDT') {
+    const parsedUsd = parsePositiveDecimalInput(rawValue, 2);
+    if (!parsedUsd.valid) {
+      return {
+        priceStr: null,
+        usdEstimate: null,
+        error: `${isSl ? 'Zarar tutarı' : 'Kâr hedefi'}: ${parsedUsd.message}`,
+      };
+    }
+    const usdNum = Number(parsedUsd.normalized);
+    if (!sizingDiagnosis.ok) {
+      const error = !effectiveEntryPrice
+        ? `USDT ${isSl ? 'zarar' : 'kâr'} hesabı için piyasa fiyatı bekleniyor veya Limit fiyat girin.`
+        : sizingDiagnosis.reason === 'BELOW_MIN_STEP_OR_NOTIONAL'
+          ? buildMinBudgetMessage(sizingDiagnosis, baseAsset)
+          : `USDT ${isSl ? 'zarar' : 'kâr hedefi'} hesaplamak için geçerli bir teminat bütçesi ve kaldıraç girin.`;
+      return { priceStr: null, usdEstimate: usdNum, error };
+    }
+    const conv = isSl
+      ? stopLossPriceFromUsd(side, sizing!, usdNum)
+      : takeProfitPriceFromUsd(side, sizing!, usdNum);
+    if (conv.error || conv.price === null) {
+      return { priceStr: null, usdEstimate: usdNum, error: conv.error };
+    }
+    return {
+      priceStr: formatFixedDecimal(conv.price, stepDecimals(sizing!.tickSize)),
+      usdEstimate: usdNum,
+      error: null,
+    };
+  }
+
+  const parsedPrice = parsePositiveDecimalInput(rawValue, 8);
+  if (!parsedPrice.valid) {
+    return {
+      priceStr: null,
+      usdEstimate: null,
+      error: `${isSl ? 'Stop-Loss' : 'Take-Profit'}: ${parsedPrice.message}`,
+    };
+  }
+  const numPrice = Number(parsedPrice.normalized);
+  const liqErr = isSl ? validateStopLossPriceAgainstLiquidation(side, sizing, numPrice) : null;
+  const usdEst = sizing ? pnlUsdFromTriggerPrice(side, sizing, numPrice, kind) : null;
+  return {
+    priceStr: parsedPrice.normalized,
+    usdEstimate: usdEst,
+    error: liqErr,
+  };
 }

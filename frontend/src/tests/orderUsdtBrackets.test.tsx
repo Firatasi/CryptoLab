@@ -11,6 +11,7 @@ import { appRoutes } from '@/app/router';
 import { AuthProvider } from '@/features/auth/AuthContext';
 import { createTestQueryClient } from '@/app/App';
 import {
+  diagnoseOrderSizing,
   estimateLiquidationPrice,
   estimateOrderSizing,
   pnlUsdFromTriggerPrice,
@@ -42,11 +43,11 @@ const CUSTOM_QUOTE: MarketSnapshot = {
   markPrice: '80000.00',
   indexPrice: '80000.00',
   lastPrice: '80000.00',
-  change24hPercent: '1.25',
-  volume24h: '123456',
   fundingRate: '0.0001',
-  nextFundingAt: '2026-11-13T16:00:00Z',
-  asOf: '2026-11-13T15:00:00Z',
+  nextFundingTime: '2026-11-13T16:00:00Z',
+  sourceTime: '2026-11-13T15:00:00Z',
+  receivedAt: '2026-11-13T15:00:00Z',
+  sequence: 1,
   quality: 'FRESH',
 };
 
@@ -259,5 +260,162 @@ describe('USDT Bazlı SL/TP Hesabı, Tasfiye Sınırı Doğrulaması ve Emir Ak�
 
     await user.click(await screen.findByRole('button', { name: /Sunucu Emir Önizlemesi Al/i }));
     expect(previewCalled).toBe(false);
+  });
+
+  it('diagnoseOrderSizing 10 USDT min adım eksikliğini teşhis eder ve 100$ vs 10000$ aynı kaldıraçta likidasyonu sabit tutarken miktarı ölçekler', () => {
+    const lowBudget = diagnoseOrderSizing({
+      side: 'LONG',
+      entryPrice: 80000,
+      marginBudget: 10,
+      leverage: 5,
+    });
+    expect(lowBudget.ok).toBe(false);
+    if (!lowBudget.ok) {
+      expect(lowBudget.reason).toBe('BELOW_MIN_STEP_OR_NOTIONAL');
+      expect(lowBudget.stepSize).toBe(0.001);
+      expect(lowBudget.minNotionalUsd).toBe(80);
+      expect(lowBudget.minMarginBudgetUsd).toBe(16);
+    }
+
+    const hundred = estimateOrderSizing({
+      side: 'LONG',
+      entryPrice: 80000,
+      marginBudget: 100,
+      leverage: 5,
+    });
+    const tenThousand = estimateOrderSizing({
+      side: 'LONG',
+      entryPrice: 80000,
+      marginBudget: 10000,
+      leverage: 5,
+    });
+    expect(hundred).not.toBeNull();
+    expect(tenThousand).not.toBeNull();
+    expect(tenThousand!.quantity).toBeGreaterThan(hundred!.quantity * 90);
+    expect(Math.abs(hundred!.estimatedLiquidationPrice! - tenThousand!.estimatedLiquidationPrice!)).toBeLessThan(1e-6);
+  });
+
+  it('AI önerisinde teminat bütçesi değiştirildiğinde canlı özet, SL/TP USDT beklentisi, USDT tetik fiyatı ve önizleme kartı dinamik güncellenir', async () => {
+    const user = userEvent.setup();
+    setAccessToken(TEST_TOKENS.user);
+
+    server.use(
+      http.get('/api/v1/market/quotes', () => HttpResponse.json(CUSTOM_QUOTE)),
+      http.post('/api/v1/sim/order-previews', async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          planId: 'plan-scale-1',
+          revision: 1,
+          planHash: 'sha256:planscale1',
+          sessionId: 'sess-1',
+          instrumentId: 'BTCUSDT',
+          instrumentVersion: 1,
+          source: 'MANUAL',
+          proposalId: body.originProposalId ?? null,
+          positionGeneration: 1,
+          side: 'LONG',
+          orderType: 'MARKET',
+          quantity: '0.062',
+          referenceEntry: '80000.00',
+          limitPrice: null,
+          marginRequired: '992.00',
+          openFeeEstimate: '1.98',
+          notional: '4960.00',
+          leverage: '5',
+          stopLoss: String(body.stopLoss ?? ''),
+          takeProfit: String(body.takeProfit ?? ''),
+          horizonSeconds: 3600,
+          expiryPolicy: 'CLOSE_AT_DEADLINE',
+          priceLowerBound: '79000',
+          priceUpperBound: '81000',
+          maxOpenFee: '5',
+          maxSlippageBps: '5',
+          ruleProfileId: '88888888-8888-4888-8888-888888888888',
+          riskPolicyVersion: 1,
+          createdAt: new Date(Date.now() - 1000).toISOString(),
+          validUntil: new Date(Date.now() + 60_000).toISOString(),
+          estimatedLiquidationPrice: '64321.61',
+          warnings: [],
+        });
+      }),
+    );
+
+    const seed: AiProposalSeed = {
+      proposalId: 'prop-scale-1',
+      revision: 1,
+      symbol: 'BTCUSDT',
+      side: 'LONG',
+      orderType: 'MARKET',
+      limitPrice: null,
+      stopLoss: '78400',
+      takeProfit: '83200',
+      suggestedLeverage: '5',
+      referenceEntry: '80000',
+      horizonSeconds: 3600,
+      expiryPolicy: 'CLOSE_AT_DEADLINE',
+    };
+
+    renderTradeRoute('/trade/sess-1?instrumentId=BTCUSDT', { aiProposalSeed: seed });
+
+    await screen.findByTestId('live-order-summary');
+    expect(screen.getByTestId('live-summary-quantity')).toHaveTextContent(/0,015 BTC/i);
+    expect(screen.getByTestId('live-summary-brackets')).toHaveTextContent(/24,00 USDT/);
+    expect(screen.getByTestId('live-summary-brackets')).toHaveTextContent(/48,00 USDT/);
+
+    // Bütçe 250 -> 1000 yapıldığında miktar ve SL/TP USDT beklentisi anında güncellenir
+    const marginInput = screen.getByLabelText(/Teminat Bütçesi/i);
+    await user.clear(marginInput);
+    await user.type(marginInput, '1000');
+
+    expect(screen.getByTestId('live-summary-quantity')).toHaveTextContent(/0,062 BTC/i);
+    expect(screen.getByTestId('live-summary-brackets')).toHaveTextContent(/99,20 USDT/);
+    expect(screen.getByTestId('live-summary-brackets')).toHaveTextContent(/198,40 USDT/);
+
+    // USDT moduna geçip 50$ zarar hedefi girildiğinde bütçe değişimi tetik fiyatını günceller
+    await user.click(screen.getByRole('button', { name: /SL giriş modu: USDT/i }));
+    const slInput = screen.getByLabelText(/Zarar Durdur \(SL\)/i);
+    await user.clear(slInput);
+    await user.type(slInput, '50');
+    expect(screen.getByText(/Tetik: ~79\.193,55 USDT/i)).toBeInTheDocument();
+
+    await user.clear(marginInput);
+    await user.type(marginInput, '2000');
+    expect(screen.getByText(/Tetik: ~79\.600,00 USDT/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Sunucu Emir Önizlemesi Al/i }));
+    const planCard = await screen.findByTestId('execution-plan-card');
+    expect(planCard).toHaveTextContent(/Risk edilen marjin:/i);
+    expect(planCard).toHaveTextContent(/SL:.*USDT.*TP:.*USDT/i);
+  });
+
+  it('BTC için 10 USDT bütçede sahte geçersiz girdi hatası yerine minimum adım uyarısı gösterir ve Fiyat->USDT geçişinde ham fiyatı temizler', async () => {
+    const user = userEvent.setup();
+    setAccessToken(TEST_TOKENS.user);
+
+    server.use(http.get('/api/v1/market/quotes', () => HttpResponse.json(CUSTOM_QUOTE)));
+
+    renderTradeRoute('/trade/sess-1?instrumentId=BTCUSDT');
+
+    await screen.findByTestId('mark-price-value');
+
+    const slInput = screen.getByLabelText(/Zarar Durdur \(SL\)/i);
+    await user.type(slInput, '78500');
+
+    const marginInput = screen.getByLabelText(/Teminat Bütçesi/i);
+    await user.clear(marginInput);
+    await user.type(marginInput, '10');
+
+    const minWarning = await screen.findByTestId('live-summary-min-budget');
+    expect(minWarning).toHaveTextContent(/Minimum işlem adımı/i);
+    expect(minWarning).toHaveTextContent(/16,00 USDT/i);
+
+    // Sizing hesaplanamadığı için Fiyat->USDT geçişinde ham fiyat 78500 USDT zararı olarak kalmaz
+    await user.click(screen.getByRole('button', { name: /SL giriş modu: USDT/i }));
+    expect(slInput).toHaveValue('');
+
+    await user.type(slInput, '5');
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts.some((el) => /Minimum işlem adımı/i.test(el.textContent ?? ''))).toBe(true);
+    expect(alerts.some((el) => /geçerli bir teminat bütçesi ve kaldıraç girin/i.test(el.textContent ?? ''))).toBe(false);
   });
 });

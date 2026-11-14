@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, BrainCircuit, CheckCircle2, History, X } from 'lucide-react';
@@ -12,6 +12,10 @@ import { marketApi } from '@/features/market/api';
 import { InstrumentSelector } from '@/features/market/InstrumentSelector';
 import { PriceCard } from '@/features/market/PriceCard';
 import { CandleChart } from '@/features/market/CandleChart';
+import {
+  mergeLiveSnapshotIntoCandles,
+  useLiveMarketQuoteStream,
+} from '@/features/market/liveMarketStream';
 import { sessionsApi } from '@/features/sessions/api';
 import { SessionStatusBadge, walletPnlToneClass } from '@/features/sessions/SessionsPage';
 import { Badge, Button, Card } from '@/shared/ui/Primitives';
@@ -173,11 +177,16 @@ export function TradeWorkspacePage() {
     }
   }, [sessionId, sessionQuery.data?.id, user?.id]);
 
+  const marketStream = useLiveMarketQuoteStream({
+    enabled: Boolean(selectedInstrumentId),
+    instrumentId: selectedInstrumentId,
+  });
+
   const quoteQuery = useQuery({
     queryKey: queryKeys.market.quote(selectedInstrumentId ?? ''),
     queryFn: ({ signal }) => marketApi.getSnapshot(selectedInstrumentId!, signal),
     enabled: Boolean(selectedInstrumentId),
-    refetchInterval: 2_000,
+    refetchInterval: marketStream.status === 'LIVE' ? false : 2_000,
   });
 
   const candlesQuery = useQuery({
@@ -188,8 +197,13 @@ export function TradeWorkspacePage() {
         signal
       ),
     enabled: Boolean(selectedInstrumentId),
-    refetchInterval: 2_000,
+    refetchInterval: 3_000,
   });
+
+  const liveCandles = useMemo(
+    () => mergeLiveSnapshotIntoCandles(candlesQuery.data, quoteQuery.data),
+    [candlesQuery.data, quoteQuery.data]
+  );
 
   const positionsQuery = useQuery({
     queryKey: queryKeys.trading.positions(effectiveSessionId),
@@ -368,7 +382,7 @@ export function TradeWorkspacePage() {
           />
 
           <CandleChart
-            series={candlesQuery.data}
+            series={liveCandles}
             interval={chartInterval}
             onIntervalChange={(nextInterval) => {
               const next = new URLSearchParams(searchParams);

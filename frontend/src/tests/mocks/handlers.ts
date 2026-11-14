@@ -598,6 +598,13 @@ export const handlers = [
     });
   }),
 
+  http.get('/api/v1/market/stream', () => {
+    return new HttpResponse(':heartbeat\n\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  }),
+
   // Sessions & Stream
   http.get('/api/v1/sim/sessions', () => {
     return HttpResponse.json({ items: [canonicalSession] });

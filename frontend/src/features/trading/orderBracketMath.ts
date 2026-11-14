@@ -1,8 +1,9 @@
-import type { PositionSide } from '../../shared/api/types';
+import type { PositionSide } from '@/shared/contracts/types';
 
 export type BracketInputMode = 'PRICE' | 'USDT';
 
 export const DEFAULT_MAINTENANCE_MARGIN_RATE = 0.005;
+export const DEFAULT_MIN_NOTIONAL_USD = 5;
 
 export interface OrderSizingEstimate {
   entryPrice: number;
@@ -17,6 +18,16 @@ export interface OrderSizingEstimate {
   /** Likidasyon tetiklenmeden önce güvenle girilebilecek azami zarar (USDT). */
   maxSafeStopLossUsd: number | null;
 }
+
+export type OrderSizingDiagnosis =
+  | { ok: true; estimate: OrderSizingEstimate }
+  | {
+      ok: false;
+      reason: 'MISSING_INPUTS' | 'BELOW_MIN_STEP_OR_NOTIONAL';
+      minMarginBudgetUsd: number | null;
+      minNotionalUsd: number | null;
+      stepSize: number | null;
+    };
 
 export function parseFiniteDecimal(raw: string | number | null | undefined): number | null {
   if (raw === null || raw === undefined) return null;
@@ -94,15 +105,22 @@ export function estimateLiquidationPrice(
 }
 
 /**
- * Teminat + kaldıraç + giriş fiyatından adet, marjin, tahmini likidasyon fiyatı ve azami güvenli SL zararını hesaplar.
+ * Teminat + kaldıraç + giriş fiyatından boyutlandırmayı ve minimum adım / notional durumunu teşhis eder.
  */
-export function estimateOrderSizing(params: {
+export function diagnoseOrderSizing(params: {
   side: PositionSide;
   entryPrice: number | null;
   marginBudget: number | null;
   leverage: number | null;
-}): OrderSizingEstimate | null {
-  const { side, entryPrice, marginBudget, leverage } = params;
+  minNotionalUsd?: number;
+}): OrderSizingDiagnosis {
+  const {
+    side,
+    entryPrice,
+    marginBudget,
+    leverage,
+    minNotionalUsd = DEFAULT_MIN_NOTIONAL_USD,
+  } = params;
   if (
     entryPrice === null ||
     marginBudget === null ||
@@ -111,7 +129,13 @@ export function estimateOrderSizing(params: {
     !(marginBudget > 0) ||
     !(leverage >= 1)
   ) {
-    return null;
+    return {
+      ok: false,
+      reason: 'MISSING_INPUTS',
+      minMarginBudgetUsd: null,
+      minNotionalUsd: null,
+      stepSize: null,
+    };
   }
 
   const stepSize = inferStepSize(entryPrice);
@@ -120,11 +144,22 @@ export function estimateOrderSizing(params: {
   const flooredSteps = Math.floor(rawQty / stepSize + 1e-12);
   const stepDec = stepDecimals(stepSize);
   const quantity = Number((flooredSteps * stepSize).toFixed(stepDec));
-  if (!(quantity > 0)) {
-    return null;
+  const notional = quantity * entryPrice;
+  const effectiveMinNotional = Math.max(minNotionalUsd, stepSize * entryPrice);
+
+  if (!(quantity > 0) || notional + 1e-9 < minNotionalUsd) {
+    const requiredSteps = Math.max(1, Math.ceil(effectiveMinNotional / (stepSize * entryPrice) - 1e-12));
+    const exactMinNotional = requiredSteps * stepSize * entryPrice;
+    const minMargin = Math.ceil((exactMinNotional / leverage) * 100) / 100;
+    return {
+      ok: false,
+      reason: 'BELOW_MIN_STEP_OR_NOTIONAL',
+      minMarginBudgetUsd: minMargin,
+      minNotionalUsd: Number(exactMinNotional.toFixed(2)),
+      stepSize,
+    };
   }
 
-  const notional = quantity * entryPrice;
   const margin = notional / leverage;
   const estimatedLiquidationPrice = estimateLiquidationPrice(side, quantity, entryPrice, margin);
 
@@ -145,16 +180,32 @@ export function estimateOrderSizing(params: {
   }
 
   return {
-    entryPrice,
-    quantity,
-    notional,
-    margin,
-    tickSize,
-    stepSize,
-    estimatedLiquidationPrice,
-    rawLiquidationLossUsd,
-    maxSafeStopLossUsd,
+    ok: true,
+    estimate: {
+      entryPrice,
+      quantity,
+      notional,
+      margin,
+      tickSize,
+      stepSize,
+      estimatedLiquidationPrice,
+      rawLiquidationLossUsd,
+      maxSafeStopLossUsd,
+    },
   };
+}
+
+/**
+ * Teminat + kaldıraç + giriş fiyatından adet, marjin, tahmini likidasyon fiyatı ve azami güvenli SL zararını hesaplar.
+ */
+export function estimateOrderSizing(params: {
+  side: PositionSide;
+  entryPrice: number | null;
+  marginBudget: number | null;
+  leverage: number | null;
+}): OrderSizingEstimate | null {
+  const diagnosed = diagnoseOrderSizing(params);
+  return diagnosed.ok ? diagnosed.estimate : null;
 }
 
 /**
