@@ -4,6 +4,7 @@ import { formatChartCrosshairTime, formatChartTickMark } from '@/features/market
 import {
   classifyChartSeriesUpdate,
   mergeLiveSnapshotIntoCandles,
+  reconcileIncomingCandles,
 } from '@/features/market/liveMarketStream';
 import type { CandleSeriesResponse, MarketSnapshot } from '@/shared/contracts/types';
 
@@ -173,5 +174,43 @@ describe('liveMarketStream & chart timezone formatting', () => {
       4
     );
     expect(recreatedInstance.mode).toBe('reset');
+  });
+
+  it('matches canonical UUID candle series with symbol-keyed live ticks and preserves intrabar wicks across REST refetches', () => {
+    const uuidSeries: CandleSeriesResponse = {
+      ...makeSeries('1m'),
+      instrumentId: '11111111-1111-4111-8111-111111111111',
+      symbol: '',
+    };
+
+    const tickUpdated = mergeLiveSnapshotIntoCandles(
+      uuidSeries,
+      makeSnapshot({
+        instrumentId: 'BTCUSDT',
+        symbol: 'BTCUSDT',
+        lastPrice: '90240.00',
+        sourceTime: '2026-11-14T00:13:52.000Z',
+      })
+    );
+
+    expect(tickUpdated?.bars[1].high).toBe('90240.00');
+    expect(tickUpdated?.bars[1].close).toBe('90240.00');
+
+    const olderRestResponse: CandleSeriesResponse = {
+      ...uuidSeries,
+      asOf: '2026-11-14T00:13:50.000Z',
+      bars: [
+        uuidSeries.bars[0],
+        {
+          ...uuidSeries.bars[1],
+          high: '90180.00',
+          close: '90160.00',
+        },
+      ],
+    };
+
+    const reconciled = reconcileIncomingCandles(tickUpdated, olderRestResponse);
+    expect(reconciled.bars[1].high).toBe('90240.00');
+    expect(reconciled.bars[1].close).toBe('90240.00');
   });
 });

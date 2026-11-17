@@ -333,10 +333,10 @@ public class SessionController {
         );
 
         var context = new PreviewFactory.Context(
-                refPrice.subtract(tickSize),
-                refPrice.add(tickSize),
+                refPrice,
+                refPrice,
                 available,
-                new BigDecimal("5"),
+                BigDecimal.ZERO,
                 1L,
                 60L,
                 refPrice.multiply(new BigDecimal("0.90")),
@@ -900,7 +900,7 @@ public class SessionController {
                 FROM positions p
                 JOIN simulation_sessions s ON s.id = p.session_id
                 LEFT JOIN session_metadata m ON m.session_id = s.id
-                WHERE s.owner_id = ? AND COALESCE(m.deleted, false) = false
+                WHERE s.owner_id = ? AND s.mode = 'LIVE_PAPER' AND COALESCE(m.deleted, false) = false
                   AND p.state IN ('OPEN', 'LIQUIDATING')
                 """);
         List<Object> posParams = new ArrayList<>();
@@ -957,7 +957,7 @@ public class SessionController {
                     ) AS halt_reason
                 FROM simulation_sessions s
                 LEFT JOIN session_metadata m ON m.session_id = s.id
-                WHERE s.owner_id = ? AND COALESCE(m.deleted, false) = false
+                WHERE s.owner_id = ? AND s.mode = 'LIVE_PAPER' AND COALESCE(m.deleted, false) = false
                 """);
         List<Object> params = new ArrayList<>();
         params.add(ownerId);
@@ -1056,7 +1056,7 @@ public class SessionController {
                         SELECT s.id
                         FROM simulation_sessions s
                         LEFT JOIN session_metadata m ON m.session_id = s.id
-                        WHERE s.id = ? AND s.owner_id = ? AND COALESCE(m.deleted, false) = false
+                        WHERE s.id = ? AND s.owner_id = ? AND s.mode = 'LIVE_PAPER' AND COALESCE(m.deleted, false) = false
                         """, UUID.class, candidate, ownerId);
                 if (!found.isEmpty()) {
                     return found.getFirst();
@@ -1069,7 +1069,7 @@ public class SessionController {
                 SELECT s.id
                 FROM simulation_sessions s
                 LEFT JOIN session_metadata m ON m.session_id = s.id
-                WHERE s.owner_id = ? AND COALESCE(m.deleted, false) = false
+                WHERE s.owner_id = ? AND s.mode = 'LIVE_PAPER' AND COALESCE(m.deleted, false) = false
                 ORDER BY (CASE WHEN s.status = 'RUNNING' THEN 0 ELSE 1 END), s.created_at DESC
                 LIMIT 1
                 """, UUID.class, ownerId);
@@ -1077,18 +1077,7 @@ public class SessionController {
             return latest.getFirst();
         }
 
-        UUID createdId = createSession.execute(
-                ownerId,
-                new BigDecimal("10000"),
-                DEFAULT_RULE_PROFILE_ID,
-                DEFAULT_RISK_POLICY_ID
-        );
-        jdbc.update("""
-                INSERT INTO session_metadata(session_id, name, deleted, updated_at)
-                VALUES (?, 'Ana Sanal Cüzdan', false, ?)
-                ON CONFLICT (session_id) DO NOTHING
-                """, createdId, Timestamp.from(clock.instant()));
-        return createdId;
+        throw new BusinessException(BusinessException.Code.NOT_FOUND);
     }
 
     private static BigDecimal inferTickSize(BigDecimal price) {
@@ -1178,10 +1167,10 @@ public class SessionController {
         );
 
         var liveContext = new PreviewFactory.Context(
-                refPrice.subtract(tickSize),
-                refPrice.add(tickSize),
+                refPrice,
+                refPrice,
                 equity,
-                new BigDecimal("5"),
+                BigDecimal.ZERO,
                 1L,
                 60L,
                 refPrice.multiply(new BigDecimal("0.90")),

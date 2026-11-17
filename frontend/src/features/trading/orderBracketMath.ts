@@ -27,6 +27,10 @@ export type OrderSizingDiagnosis =
       minMarginBudgetUsd: number | null;
       minNotionalUsd: number | null;
       stepSize: number | null;
+      /** Lot adımı sağlanamasa bile bütçe ve kaldıraca göre tahmini likidasyon zararı (USDT). */
+      budgetRawLiquidationLossUsd: number | null;
+      /** Lot adımı sağlanamasa bile bütçe ve kaldıraca göre azami güvenli SL (USDT). */
+      budgetMaxSafeStopLossUsd: number | null;
     };
 
 export function parseFiniteDecimal(raw: string | number | null | undefined): number | null {
@@ -105,6 +109,54 @@ export function estimateLiquidationPrice(
 }
 
 /**
+ * Bakiye/teminat bütçesi ve kaldıraçtan bağımsız adım yuvarlaması olmadan teorik likidasyon zarar sınırını hesaplar.
+ */
+function computeBudgetLiquidationBounds(
+  side: PositionSide,
+  effectiveMarginBudget: number | null,
+  leverage: number | null,
+): { rawLoss: number | null; maxSafeUsd: number | null } {
+  if (
+    effectiveMarginBudget === null ||
+    leverage === null ||
+    !(effectiveMarginBudget > 0) ||
+    !(leverage >= 1)
+  ) {
+    return { rawLoss: null, maxSafeUsd: null };
+  }
+  const mmr = DEFAULT_MAINTENANCE_MARGIN_RATE;
+  const denom = side === 'LONG' ? 1 - mmr : 1 + mmr;
+  const numeratorRatio = Math.max(0, 1 - leverage * mmr);
+  const rawLoss = (effectiveMarginBudget * numeratorRatio) / denom;
+  const safeUsd = Math.floor(Math.max(0, rawLoss - 0.01) * 100) / 100;
+  return {
+    rawLoss: rawLoss > 0 ? rawLoss : 0,
+    maxSafeUsd: safeUsd > 0 ? safeUsd : 0,
+  };
+}
+
+/**
+ * Likidasyon sınırı aşıldığında OrderTicket ve modal genelinde tek biçimli uyarı metni üretir.
+ */
+export function buildLiquidationExceededMessage(
+  rawLiquidationLossUsd: number | null,
+  maxSafeStopLossUsd: number | null,
+): string {
+  const liqText =
+    rawLiquidationLossUsd !== null
+      ? rawLiquidationLossUsd.toLocaleString('tr-TR', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })
+      : 'mevcut teminat';
+  const maxText = (maxSafeStopLossUsd ?? 0).toLocaleString('tr-TR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `Bu pozisyon yaklaşık ${liqText} USDT zararda likid oluyor. Zarar durdur için en fazla ${maxText} USDT zarar girebilirsiniz.`;
+}
+
+/**
  * Teminat + kaldıraç + giriş fiyatından boyutlandırmayı ve minimum adım / notional durumunu teşhis eder.
  */
 export function diagnoseOrderSizing(params: {
@@ -113,6 +165,7 @@ export function diagnoseOrderSizing(params: {
   marginBudget: number | null;
   leverage: number | null;
   minNotionalUsd?: number;
+  availableBalance?: number | null;
 }): OrderSizingDiagnosis {
   const {
     side,
@@ -120,13 +173,26 @@ export function diagnoseOrderSizing(params: {
     marginBudget,
     leverage,
     minNotionalUsd = DEFAULT_MIN_NOTIONAL_USD,
+    availableBalance = null,
   } = params;
+
+  const effectiveMarginBudget =
+    marginBudget !== null &&
+    marginBudget > 0 &&
+    availableBalance !== null &&
+    availableBalance !== undefined &&
+    availableBalance > 0
+      ? Math.min(marginBudget, availableBalance)
+      : marginBudget;
+
+  const budgetBounds = computeBudgetLiquidationBounds(side, effectiveMarginBudget, leverage);
+
   if (
     entryPrice === null ||
-    marginBudget === null ||
+    effectiveMarginBudget === null ||
     leverage === null ||
     !(entryPrice > 0) ||
-    !(marginBudget > 0) ||
+    !(effectiveMarginBudget > 0) ||
     !(leverage >= 1)
   ) {
     return {
@@ -135,12 +201,14 @@ export function diagnoseOrderSizing(params: {
       minMarginBudgetUsd: null,
       minNotionalUsd: null,
       stepSize: null,
+      budgetRawLiquidationLossUsd: budgetBounds.rawLoss,
+      budgetMaxSafeStopLossUsd: budgetBounds.maxSafeUsd,
     };
   }
 
   const stepSize = inferStepSize(entryPrice);
   const tickSize = inferTickSize(entryPrice);
-  const rawQty = (marginBudget * leverage) / entryPrice;
+  const rawQty = (effectiveMarginBudget * leverage) / entryPrice;
   const flooredSteps = Math.floor(rawQty / stepSize + 1e-12);
   const stepDec = stepDecimals(stepSize);
   const quantity = Number((flooredSteps * stepSize).toFixed(stepDec));
@@ -157,6 +225,8 @@ export function diagnoseOrderSizing(params: {
       minMarginBudgetUsd: minMargin,
       minNotionalUsd: Number(exactMinNotional.toFixed(2)),
       stepSize,
+      budgetRawLiquidationLossUsd: budgetBounds.rawLoss,
+      budgetMaxSafeStopLossUsd: budgetBounds.maxSafeUsd,
     };
   }
 
@@ -273,20 +343,9 @@ export function stopLossPriceFromUsd(
   }
 
   if (sizing.maxSafeStopLossUsd !== null && targetLossUsd > sizing.maxSafeStopLossUsd) {
-    const liqText =
-      sizing.rawLiquidationLossUsd !== null
-        ? sizing.rawLiquidationLossUsd.toLocaleString('tr-TR', {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          })
-        : 'mevcut teminat';
-    const maxText = sizing.maxSafeStopLossUsd.toLocaleString('tr-TR', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
     return {
       price: null,
-      error: `Bu pozisyon yaklaşık ${liqText} USDT zararda likid oluyor. Zarar durdur için en fazla ${maxText} USDT zarar girebilirsiniz.`,
+      error: buildLiquidationExceededMessage(sizing.rawLiquidationLossUsd, sizing.maxSafeStopLossUsd),
     };
   }
 

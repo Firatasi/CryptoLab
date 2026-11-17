@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Search, X } from 'lucide-react';
+import { Search, Star, X } from 'lucide-react';
 import { createAnalysis, getAnalysis, getProposal } from './api';
 import { useAuth } from '@/features/auth/AuthContext';
 import { marketApi } from '@/features/market/api';
+import { useFavoriteInstruments } from '@/features/market/useFavoriteInstruments';
 import { sessionsApi } from '@/features/sessions/api';
 import { queryKeys } from '@/shared/api/queryKeys';
 import { createIdempotencyKey } from '@/shared/api/idempotency';
@@ -146,15 +147,17 @@ export function AnalysisPage() {
     queryFn: ({ signal }) => marketApi.listInstruments({ limit: 1000, signal }),
   });
 
+  const { canFavorite, isFavorite, toggleFavorite, partitionByFavorites } = useFavoriteInstruments();
   const instruments = instrumentsQuery.data?.items ?? [];
   const trimmedSearch = instrumentSearch.trim().toUpperCase();
-  const filteredInstruments = trimmedSearch
+  const matchedInstruments = trimmedSearch
     ? instruments.filter(
         (i) =>
           i.symbol.toUpperCase().includes(trimmedSearch) ||
           i.baseAsset.toUpperCase().includes(trimmedSearch),
       )
     : instruments;
+  const filteredInstruments = partitionByFavorites(matchedInstruments);
 
   useEffect(() => {
     if (filteredInstruments.length === 0) return;
@@ -353,27 +356,53 @@ export function AnalysisPage() {
                       )}
                     </div>
 
-                    <SelectInput
-                      id={id}
-                      value={instrumentId}
-                      onChange={(e) => setInstrumentId(e.target.value)}
-                      disabled={instruments.length > 0 && filteredInstruments.length === 0}
-                    >
-                      {instruments.length === 0 ? (
-                        <option value={DEFAULT_BTC_INSTRUMENT_ID}>
-                          BTCUSDT (BINANCE_USD_M · PERPETUAL)
-                        </option>
-                      ) : filteredInstruments.length === 0 ? (
-                        <option value="">Eşleşen kontrat bulunamadı</option>
-                      ) : (
-                        filteredInstruments.map((item) => (
-                          <option key={item.instrumentId} value={item.instrumentId}>
-                            {item.symbol} ({item.exchangeId} · {item.contractType})
-                            {!item.capabilities.analysisReady ? ' [Analiz Kapalı]' : ''}
+                    <div className="flex items-center gap-1.5">
+                      <SelectInput
+                        id={id}
+                        value={instrumentId}
+                        onChange={(e) => setInstrumentId(e.target.value)}
+                        disabled={instruments.length > 0 && filteredInstruments.length === 0}
+                      >
+                        {instruments.length === 0 ? (
+                          <option value={DEFAULT_BTC_INSTRUMENT_ID}>
+                            BTCUSDT (BINANCE_USD_M · PERPETUAL)
                           </option>
-                        ))
+                        ) : filteredInstruments.length === 0 ? (
+                          <option value="">Eşleşen kontrat bulunamadı</option>
+                        ) : (
+                          filteredInstruments.map((item) => (
+                            <option key={item.instrumentId} value={item.instrumentId}>
+                              {canFavorite && isFavorite(item.symbol) ? '★ ' : ''}
+                              {item.symbol} ({item.exchangeId} · {item.contractType})
+                              {!item.capabilities.analysisReady ? ' [Analiz Kapalı]' : ''}
+                            </option>
+                          ))
+                        )}
+                      </SelectInput>
+                      {canFavorite && selectedInstrumentMeta && (
+                        <button
+                          type="button"
+                          data-testid="analysis-favorite-toggle"
+                          aria-label={
+                            isFavorite(selectedInstrumentMeta.symbol)
+                              ? 'Favorilerden çıkar'
+                              : 'Favorilere ekle'
+                          }
+                          aria-pressed={isFavorite(selectedInstrumentMeta.symbol)}
+                          onClick={() => toggleFavorite(selectedInstrumentMeta.symbol)}
+                          className="flex h-9 w-9 shrink-0 items-center justify-center border border-[#e5e5e5] bg-[#f5f5f5] text-[#737373] transition-colors hover:border-[#0a0a0a] hover:text-amber-500"
+                        >
+                          <Star
+                            className={
+                              isFavorite(selectedInstrumentMeta.symbol)
+                                ? 'h-4 w-4 fill-amber-400 text-amber-400'
+                                : 'h-4 w-4'
+                            }
+                            aria-hidden="true"
+                          />
+                        </button>
                       )}
-                    </SelectInput>
+                    </div>
                   </div>
                 )}
               </FieldGroup>

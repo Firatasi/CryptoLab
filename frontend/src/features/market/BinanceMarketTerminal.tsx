@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   classifyChartSeriesUpdate,
   mergeLiveSnapshotIntoCandles,
+  reconcileIncomingCandles,
   useLiveMarketQuoteStream,
   type ChartRenderMeta,
   type LiveQuoteSnapshot,
 } from './liveMarketStream';
 import { formatChartCrosshairTime, formatChartTickMark } from './CandleChart';
 import { ConnectionStatusBadge } from '@/shared/ui/Feedback';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
   createChart,
@@ -26,9 +27,10 @@ import {
   BarChart2,
   RefreshCw,
   Search,
+  Star,
   TrendingUp,
 } from 'lucide-react';
-import type { CandleInterval } from '@/shared/contracts/types';
+import type { CandleInterval, CandleSeriesResponse } from '@/shared/contracts/types';
 import { toChartNumber } from '@/shared/formatting/chartNumber';
 import {
   formatPrice,
@@ -40,6 +42,7 @@ import { Badge, Skeleton } from '@/shared/ui/Primitives';
 import { queryKeys } from '@/shared/api/queryKeys';
 import { cn } from '@/shared/ui/cn';
 import { marketApi, type BinanceTickerItem } from './api';
+import { useFavoriteInstruments } from './useFavoriteInstruments';
 
 const INTERVALS: { value: CandleInterval; label: string }[] = [
   { value: '1m', label: '1dk' },
@@ -123,6 +126,8 @@ function computeSma(
 
 export function BinanceMarketTerminal() {
   const { timezone } = useAuth();
+  const { canFavorite, isFavorite, toggleFavorite, partitionByFavorites } = useFavoriteInstruments();
+  const queryClient = useQueryClient();
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTCUSDT');
   const [interval, setIntervalState] = useState<CandleInterval>('15m');
   const [chartStyle, setChartStyle] = useState<ChartStyle>('CANDLE');
@@ -168,16 +173,21 @@ export function BinanceMarketTerminal() {
 
   const candlesQuery = useQuery({
     queryKey: queryKeys.market.candles(selectedSymbol, interval),
-    queryFn: ({ signal }) =>
-      marketApi.getCandles(
+    queryFn: async ({ signal }) => {
+      const next = await marketApi.getCandles(
         {
           instrumentId: selectedSymbol,
           interval,
           limit: 150,
         },
         signal
-      ),
-    refetchInterval: 2_500,
+      );
+      const prev = queryClient.getQueryData<CandleSeriesResponse>(
+        queryKeys.market.candles(selectedSymbol, interval)
+      );
+      return reconcileIncomingCandles(prev, next);
+    },
+    refetchInterval: interval === '1m' ? 1_500 : 2_500,
   });
 
   const liveCandles = useMemo(
@@ -201,21 +211,20 @@ export function BinanceMarketTerminal() {
         item.baseAsset.includes(q)
     );
 
+    let result = list;
     if (watchlistFilter === 'GAINERS') {
-      return [...list]
+      result = [...list]
         .filter((i) => Number(i.priceChangePercent) > 0)
         .sort((a, b) => Number(b.priceChangePercent) - Number(a.priceChangePercent));
-    }
-    if (watchlistFilter === 'LOSERS') {
-      return [...list]
+    } else if (watchlistFilter === 'LOSERS') {
+      result = [...list]
         .filter((i) => Number(i.priceChangePercent) < 0)
         .sort((a, b) => Number(a.priceChangePercent) - Number(b.priceChangePercent));
+    } else if (watchlistFilter === 'VOLUME') {
+      result = [...list].sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume));
     }
-    if (watchlistFilter === 'VOLUME') {
-      return [...list].sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume));
-    }
-    return list;
-  }, [allTickers, searchQuery, watchlistFilter]);
+    return partitionByFavorites(result);
+  }, [allTickers, partitionByFavorites, searchQuery, watchlistFilter]);
 
   const formattedBars = useMemo(() => {
     const rawBars = liveCandles?.bars ?? [];
@@ -947,51 +956,84 @@ export function BinanceMarketTerminal() {
                   const isSelected = item.symbol === selectedSymbol;
                   const pct = Number(item.priceChangePercent);
                   const isUp = pct >= 0;
+                  const fav = isFavorite(item.symbol);
 
                   return (
-                    <button
+                    <div
                       key={item.symbol}
-                      type="button"
-                      onClick={() => setSelectedSymbol(item.symbol)}
+                      data-testid={`watchlist-row-${item.symbol}`}
                       className={cn(
-                        'grid w-full grid-cols-[1.2fr_1fr_0.9fr] items-center px-3 py-2.5 text-left transition-colors',
+                        'flex w-full items-stretch transition-colors',
                         isSelected
                           ? 'bg-[#0a0a0a] text-white'
                           : 'bg-white text-[#0a0a0a] hover:bg-[#f5f5f5]'
                       )}
                     >
-                      <div>
-                        <div className="font-mono text-xs font-bold">{item.symbol}</div>
-                        <div
+                      {canFavorite && (
+                        <button
+                          type="button"
+                          data-testid={`watchlist-star-${item.symbol}`}
+                          aria-label={fav ? 'Favorilerden çıkar' : 'Favorilere ekle'}
+                          aria-pressed={fav}
+                          onClick={() => toggleFavorite(item.symbol)}
                           className={cn(
-                            'font-mono text-[10px]',
-                            isSelected ? 'text-[#a3a3a3]' : 'text-[#737373]'
-                          )}
-                        >
-                          Hacim: {formatCompactUsdt(item.quoteVolume)}
-                        </div>
-                      </div>
-
-                      <div className="text-right font-mono text-xs font-semibold tabular-nums">
-                        {formatPrice(item.lastPrice)}
-                      </div>
-
-                      <div className="text-right">
-                        <span
-                          className={cn(
-                            'inline-block border px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums',
+                            'flex shrink-0 items-center justify-center pl-2.5 pr-1 transition-colors',
                             isSelected
-                              ? 'border-white/30 bg-white/10 text-white'
-                              : isUp
-                                ? 'border-[#0a0a0a] bg-[#f5f5f5] text-[#0a0a0a]'
-                                : 'border-[#dc2626] bg-red-50 text-[#dc2626]'
+                              ? 'text-white/70 hover:text-amber-300'
+                              : 'text-[#a3a3a3] hover:text-amber-500'
                           )}
                         >
-                          {isUp ? '+' : ''}
-                          {pct.toFixed(2)}%
-                        </span>
-                      </div>
-                    </button>
+                          <Star
+                            className={cn(
+                              'h-3.5 w-3.5',
+                              fav && 'fill-amber-400 text-amber-400'
+                            )}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => setSelectedSymbol(item.symbol)}
+                        className={cn(
+                          'grid min-w-0 flex-1 grid-cols-[1.2fr_1fr_0.9fr] items-center py-2.5 pr-3 text-left',
+                          canFavorite ? 'pl-1' : 'pl-3'
+                        )}
+                      >
+                        <div>
+                          <div className="font-mono text-xs font-bold">{item.symbol}</div>
+                          <div
+                            className={cn(
+                              'font-mono text-[10px]',
+                              isSelected ? 'text-[#a3a3a3]' : 'text-[#737373]'
+                            )}
+                          >
+                            Hacim: {formatCompactUsdt(item.quoteVolume)}
+                          </div>
+                        </div>
+
+                        <div className="text-right font-mono text-xs font-semibold tabular-nums">
+                          {formatPrice(item.lastPrice)}
+                        </div>
+
+                        <div className="text-right">
+                          <span
+                            className={cn(
+                              'inline-block border px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums',
+                              isSelected
+                                ? 'border-white/30 bg-white/10 text-white'
+                                : isUp
+                                  ? 'border-[#0a0a0a] bg-[#f5f5f5] text-[#0a0a0a]'
+                                  : 'border-[#dc2626] bg-red-50 text-[#dc2626]'
+                            )}
+                          >
+                            {isUp ? '+' : ''}
+                            {pct.toFixed(2)}%
+                          </span>
+                        </div>
+                      </button>
+                    </div>
                   );
                 })
               )}

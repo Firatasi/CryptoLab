@@ -172,17 +172,42 @@ public class HttpMarketCoveragePort implements MarketCoveragePort {
             HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 200) {
                 JsonNode root = json.readTree(resp.body());
-                String mark = root.path("markPrice").asText("");
-                String last = root.path("lastPrice").asText("");
-                String picked = !mark.isBlank() ? mark : last;
-                if (!picked.isBlank()) {
-                    return new BigDecimal(picked);
+                BigDecimal bid = parsePositiveDecimal(root.path("bid").asText(""));
+                BigDecimal ask = parsePositiveDecimal(root.path("ask").asText(""));
+                BigDecimal midpoint = (bid != null && ask != null)
+                        ? bid.add(ask).divide(BigDecimal.valueOf(2), Math.max(bid.scale(), ask.scale()) + 2, RoundingMode.HALF_UP).stripTrailingZeros()
+                        : null;
+                BigDecimal mark = parsePositiveDecimal(root.path("markPrice").asText(""));
+                BigDecimal last = parsePositiveDecimal(root.path("lastPrice").asText(""));
+                BigDecimal picked = mark != null ? mark : last;
+                if (picked != null && bid != null && ask != null) {
+                    BigDecimal lowGuard = bid.min(ask).multiply(new BigDecimal("0.999"));
+                    BigDecimal highGuard = bid.max(ask).multiply(new BigDecimal("1.001"));
+                    if (picked.compareTo(lowGuard) < 0 || picked.compareTo(highGuard) > 0) {
+                        picked = midpoint;
+                    }
+                }
+                BigDecimal resolved = picked != null ? picked : midpoint;
+                if (resolved != null) {
+                    return resolved;
                 }
             }
         } catch (Exception ex) {
             log.warn("Quote lookup failed for {}: {}", symbolOrId, ex.getMessage());
         }
         return null;
+    }
+
+    private static BigDecimal parsePositiveDecimal(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            BigDecimal parsed = new BigDecimal(raw.trim());
+            return parsed.signum() > 0 ? parsed : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private List<BigDecimal[]> fetchClosedOhlc(String symbolOrId, String interval, int limit) {
