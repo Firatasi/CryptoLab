@@ -249,7 +249,7 @@ public class SessionController {
 
         jdbc.update("""
                 UPDATE orders
-                SET status = 'CANCELLED', version = version + 1, updated_at = ?
+                SET status = 'CANCELLED', reserved_amount = 0, version = version + 1, updated_at = ?
                 WHERE session_id = ? AND status = 'NEW'
                 """, Timestamp.from(now), sessionId);
 
@@ -797,6 +797,7 @@ public class SessionController {
                 FROM orders o
                 JOIN simulation_sessions s ON s.id = o.session_id
                 WHERE o.id = ? AND s.owner_id = ? AND o.status = 'NEW'
+                FOR UPDATE OF o
                 """,
                 (rs, n) -> Map.of(
                         "sessionId", rs.getObject("session_id", UUID.class),
@@ -810,11 +811,15 @@ public class SessionController {
         UUID sessionId = (UUID) rows.getFirst().get("sessionId");
         BigDecimal reserved = (BigDecimal) rows.getFirst().get("reserved");
 
-        jdbc.update("""
+        int updated = jdbc.update("""
                 UPDATE orders
-                SET status = 'CANCELLED', version = version + 1, updated_at = ?
-                WHERE id = ?
+                SET status = 'CANCELLED', reserved_amount = 0, version = version + 1, updated_at = ?
+                WHERE id = ? AND status = 'NEW'
                 """, Timestamp.from(clock.instant()), orderId);
+
+        if (updated == 0) {
+            throw new BusinessException(BusinessException.Code.NOT_FOUND);
+        }
 
         if (reserved != null && reserved.signum() > 0) {
             jdbc.update("""
@@ -956,7 +961,7 @@ public class SessionController {
                     COALESCE((
                         SELECT SUM(o.reserved_amount)
                         FROM orders o
-                        WHERE o.session_id = s.id AND o.status = 'NEW'
+                        WHERE o.session_id = s.id AND o.status = 'NEW' AND o.reserved_amount > 0
                     ), 0) AS reserved_balance,
                     (
                         SELECT h.reason
@@ -985,8 +990,11 @@ public class SessionController {
                     BigDecimal initialDeposit = rs.getBigDecimal("initial_deposit");
                     BigDecimal available = rs.getBigDecimal("available_balance");
                     BigDecimal isolated = rs.getBigDecimal("isolated_margin");
-                    BigDecimal reserved = rs.getBigDecimal("reserved_balance");
+                    BigDecimal rawReserved = rs.getBigDecimal("reserved_balance");
+                    BigDecimal reserved = rawReserved != null && rawReserved.signum() > 0 ? rawReserved : BigDecimal.ZERO;
                     BigDecimal unrealized = Decimal.cash(unrealizedBySession.getOrDefault(sid, BigDecimal.ZERO));
+                    // Açık LIMIT emirlerinin rezervi (reserved), OrderExecutionService içinde AVAILABLE
+                    // bakiyeden düşüldüğü için available + isolated + reserved toplamı çakışmaz; ayrı kalem olarak döner.
                     BigDecimal realized = Decimal.cash(available.add(isolated).add(reserved).subtract(initialDeposit));
                     BigDecimal equity = available.add(isolated).add(reserved).add(unrealized);
                     BigDecimal netPnl = Decimal.cash(equity.subtract(initialDeposit));
@@ -1006,6 +1014,7 @@ public class SessionController {
                     row.put("initialDeposit", Decimal.wire(initialDeposit));
                     row.put("availableBalance", Decimal.wire(available));
                     row.put("isolatedMargin", Decimal.wire(isolated));
+                    row.put("reservedBalance", Decimal.wire(reserved));
                     row.put("equity", Decimal.wire(equity));
                     row.put("unrealizedPnl", Decimal.wire(unrealized));
                     row.put("realizedPnl", Decimal.wire(realized));

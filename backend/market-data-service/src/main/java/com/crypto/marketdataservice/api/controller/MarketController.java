@@ -30,6 +30,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -45,6 +46,11 @@ import java.util.concurrent.atomic.AtomicLong;
 public class MarketController {
 
     private static final Set<String> ALLOWED_INTERVALS = Set.of("1m", "5m", "15m", "1h", "4h", "1d");
+    private static final Pattern SYMBOL_WHITELIST_PATTERN = Pattern.compile("^[A-Z0-9]{2,20}$");
+    private static final Pattern CANONICAL_UUID_PATTERN = Pattern.compile(
+            "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+    );
+    private static final Pattern COMPACT_UUID_HEX_PATTERN = Pattern.compile("^[0-9A-F]{32}$");
     private static final List<String> PRIORITY_SYMBOLS = List.of(
             "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
             "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "SUIUSDT", "LINKUSDT",
@@ -714,26 +720,43 @@ public class MarketController {
         if (raw == null || raw.isBlank()) {
             return "BTCUSDT";
         }
-        String cleaned = raw.trim().toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
-        String mapped = UUID_HEX_TO_SYMBOL.get(cleaned);
-        if (mapped != null) {
-            return mapped;
+        if (raw.indexOf('\r') >= 0 || raw.indexOf('\n') >= 0 || raw.indexOf('\0') >= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_INSTRUMENT");
         }
-        if (cleaned.length() == 32) {
-            String dynamicMapped = dynamicUuidHexToSymbol.get(cleaned);
-            if (dynamicMapped == null) {
-                getOrFetchLiveTickers();
-                dynamicMapped = dynamicUuidHexToSymbol.get(cleaned);
+        String trimmed = raw.trim();
+        String compactHex = null;
+        if (CANONICAL_UUID_PATTERN.matcher(trimmed).matches()) {
+            compactHex = trimmed.replace("-", "").toUpperCase(Locale.ROOT);
+        } else {
+            String upperCandidate = trimmed.toUpperCase(Locale.ROOT);
+            if (COMPACT_UUID_HEX_PATTERN.matcher(upperCandidate).matches()) {
+                compactHex = upperCandidate;
             }
-            if (dynamicMapped != null) {
-                return dynamicMapped;
+        }
+        if (compactHex != null) {
+            String mapped = UUID_HEX_TO_SYMBOL.get(compactHex);
+            if (mapped == null) {
+                mapped = dynamicUuidHexToSymbol.get(compactHex);
+                if (mapped == null) {
+                    getOrFetchLiveTickers();
+                    mapped = dynamicUuidHexToSymbol.get(compactHex);
+                }
+            }
+            if (mapped != null) {
+                if (!SYMBOL_WHITELIST_PATTERN.matcher(mapped).matches()) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_INSTRUMENT");
+                }
+                return mapped;
             }
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "UNKNOWN_INSTRUMENT");
         }
-        if (cleaned.length() > 20 || !cleaned.matches("^[A-Z0-9]{2,20}$")) {
+
+        // Geçersiz path/query karakterlerini silmek yerine beyaz listeye uymayan tüm girişleri reddet
+        String normalized = trimmed.toUpperCase(Locale.ROOT);
+        if (!SYMBOL_WHITELIST_PATTERN.matcher(normalized).matches()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_INSTRUMENT");
         }
-        return cleaned;
+        return normalized;
     }
 
     private static void putBoundedCache(

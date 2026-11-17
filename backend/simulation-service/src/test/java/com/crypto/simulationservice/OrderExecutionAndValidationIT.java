@@ -312,6 +312,11 @@ class OrderExecutionAndValidationIT {
         orderExecutionService.materializeCommandIfPending(acc3.commandId(), id -> Optional.of(liveMark));
         assertEquals("NEW", jdbc.queryForObject("SELECT status FROM orders WHERE command_id = ?", String.class, acc3.commandId()));
 
+        Map<String, Object> sessionWithPendingLimit = sessionController.getSession(jwt, sessionId.toString());
+        assertEquals(0, new BigDecimal("517.91").compareTo(new BigDecimal((String) sessionWithPendingLimit.get("reservedBalance"))));
+        assertEquals(0, new BigDecimal("1020.00").compareTo(new BigDecimal((String) sessionWithPendingLimit.get("isolatedMargin"))));
+        assertEquals(0, new BigDecimal("8461.28").compareTo(new BigDecimal((String) sessionWithPendingLimit.get("availableBalance"))));
+
         int filledLimit = orderExecutionService.matchOpenLimitOrders(sessionId, id -> Optional.of(limit3.add(new BigDecimal("10.00"))));
         assertEquals(1, filledLimit);
         UUID pos3Id = jdbc.queryForObject("SELECT position_id FROM orders WHERE command_id = ?", UUID.class, acc3.commandId());
@@ -330,6 +335,7 @@ class OrderExecutionAndValidationIT {
         Map<String, Object> sessionView = sessionController.getSession(jwt, sessionId.toString());
         assertEquals(3, sessionView.get("openPositionCount"));
         assertEquals(0, new BigDecimal("1537.50").compareTo(new BigDecimal((String) sessionView.get("isolatedMargin"))));
+        assertEquals(0, BigDecimal.ZERO.compareTo(new BigDecimal((String) sessionView.get("reservedBalance"))));
 
         // Yalnız 2. pozisyonun SL/TP seviyelerini güncelle; 1. ve 3. pozisyonlar etkilenmemeli
         sessionController.updateBrackets(jwt, pos2Id, Map.of("stopLoss", updatedSl2.toPlainString(), "takeProfit", updatedTp2.toPlainString()));

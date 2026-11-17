@@ -4,7 +4,10 @@ import com.crypto.marketdataservice.infrastructure.client.BinanceFuturesStreamHu
 import com.crypto.marketdataservice.infrastructure.client.PublicMarketHttp;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.http.HttpStatus;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.net.URI;
@@ -13,6 +16,9 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class MarketControllerFallbackAndRangeTest {
 
@@ -87,6 +93,59 @@ class MarketControllerFallbackAndRangeTest {
             Map<String, Object> result = controller.listTickers(null, 50);
             List<Map<String, Object>> items = (List<Map<String, Object>>) result.get("items");
             assertThat(items).isEmpty();
+        } finally {
+            hub.shutdown();
+        }
+    }
+
+    @Test
+    void getCandlesRejectsPathTraversalAndInvalidCharactersInInstrumentIdWithBadRequest() throws Exception {
+        BinanceFuturesStreamHub hub = BinanceFuturesStreamHub.disabled(objectMapper);
+        try {
+            PublicMarketHttp mockPrimaryHttp = Mockito.mock(PublicMarketHttp.class);
+            PublicMarketHttp mockVisionHttp = Mockito.mock(PublicMarketHttp.class);
+            MarketController controller = new MarketController(hub, false, mockPrimaryHttp, mockVisionHttp);
+            MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+
+            List<String> maliciousOrInvalidInputs = List.of(
+                    "../etc/passwd",
+                    "BTCUSDT/../admin",
+                    "BTC/USDT",
+                    "BTC;DROP",
+                    "BTCUSDT?recvWindow=5000",
+                    "BTC%2FUSDT",
+                    "1-2-3-4-5",
+                    "BTCUSDT\n",
+                    "A",
+                    "TOOLONGINSTRUMENTSYMBOL123"
+            );
+
+            for (String invalid : maliciousOrInvalidInputs) {
+                ResponseStatusException ex = assertThrows(
+                        ResponseStatusException.class,
+                        () -> controller.getCandles(invalid, "15m", 100, null, null),
+                        "Expected 400 BAD_REQUEST for instrumentId=" + invalid
+                );
+                assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                assertThat(ex.getReason()).isEqualTo("INVALID_INSTRUMENT");
+
+                mockMvc.perform(get("/api/v1/market/candles")
+                                .param("instrumentId", invalid)
+                                .param("interval", "15m"))
+                        .andExpect(status().isBadRequest());
+            }
+
+            verifyNoInteractions(mockPrimaryHttp, mockVisionHttp);
+
+            // Geçerli sembol ve UUID beyaz listeden geçer (sağlayıcı mock hata verince 503'e düşer)
+            mockMvc.perform(get("/api/v1/market/candles")
+                            .param("instrumentId", " ethusdt ")
+                            .param("interval", "15m"))
+                    .andExpect(status().isServiceUnavailable());
+            mockMvc.perform(get("/api/v1/market/candles")
+                            .param("instrumentId", "11111111-1111-4111-8111-111111111111")
+                            .param("interval", "15m"))
+                    .andExpect(status().isServiceUnavailable());
         } finally {
             hub.shutdown();
         }

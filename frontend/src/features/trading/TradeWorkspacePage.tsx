@@ -8,6 +8,7 @@ import { useAuth } from '@/features/auth/AuthContext';
 import { savePersistedJobs } from '@/shared/storage/jobPersistence';
 import { useManagedSseStream } from '@/shared/stream/useManagedSseStream';
 import { formatMoney, formatSignedMoney } from '@/shared/formatting/formatters';
+import { decimalSign } from '@/shared/formatting/decimalParser';
 import { marketApi } from '@/features/market/api';
 import { InstrumentSelector } from '@/features/market/InstrumentSelector';
 import { PriceCard } from '@/features/market/PriceCard';
@@ -275,6 +276,17 @@ export function TradeWorkspacePage() {
                     )}
                   </strong>
                 </span>
+                {decimalSign(sessionQuery.data.reservedBalance) === 1 && (
+                  <span className="text-[#737373]">
+                    Emir Rezervi:{' '}
+                    <strong className="text-[#0a0a0a]">
+                      {formatMoney(
+                        sessionQuery.data.reservedBalance,
+                        sessionQuery.data.currency
+                      )}
+                    </strong>
+                  </span>
+                )}
                 {sessionQuery.data.netPnl !== undefined && (
                   <span className="text-[#737373]">
                     Mevcut K/Z:{' '}

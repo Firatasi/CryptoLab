@@ -910,7 +910,7 @@ public class SimulationReportingService {
                     COALESCE((
                         SELECT SUM(o.reserved_amount)
                         FROM orders o
-                        WHERE o.session_id = s.id AND o.status = 'NEW'
+                        WHERE o.session_id = s.id AND o.status = 'NEW' AND o.reserved_amount > 0
                     ), 0) AS reserved_balance
                 FROM simulation_sessions s
                 LEFT JOIN session_metadata m ON m.session_id = s.id
@@ -1084,7 +1084,8 @@ public class SimulationReportingService {
             BigDecimal isolated = isolatedBySession.getOrDefault(row.sessionId(), BigDecimal.ZERO);
             BigDecimal unreal = unrealizedBySession.getOrDefault(row.sessionId(), BigDecimal.ZERO);
             BigDecimal available = row.availableBalance() != null ? row.availableBalance() : row.initialDeposit();
-            BigDecimal reserved = row.reservedBalance() != null ? row.reservedBalance() : BigDecimal.ZERO;
+            BigDecimal rawReserved = row.reservedBalance();
+            BigDecimal reserved = rawReserved != null && rawReserved.signum() > 0 ? rawReserved : BigDecimal.ZERO;
             BigDecimal equity = available.add(isolated).add(reserved).add(unreal);
             sessions.add(new SessionSnapshot(
                     row.sessionId(),

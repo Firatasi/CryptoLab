@@ -365,12 +365,102 @@ class OfflineHistoricalCatchUpUnitTest {
         assertEquals(1, items.size());
         Map<String, Object> wallet = items.getFirst();
 
-        // 8000 kullanılabilir + 2000 limit rezervi = 10000 özkaynak -> 0 sahte zarar!
+        // 8000 kullanılabilir + 2000 limit rezervi = 10000 özkaynak -> 0 sahte zarar ve ayrı reservedBalance kalemi!
         assertEquals("10000", Decimal.wire(new BigDecimal((String) wallet.get("equity"))));
         assertEquals("0", wallet.get("realizedPnl"));
         assertEquals("0", wallet.get("netPnl"));
         assertEquals("0", wallet.get("netPnlPercent"));
         assertEquals("8000", wallet.get("availableBalance"));
+        assertEquals("2000", wallet.get("reservedBalance"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void openLimitOrderBalancesStayDisjointWithOpenPositionAndSingleCancelRefund() {
+        UUID ownerId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        UUID orderId = UUID.randomUUID();
+        Jwt jwt = Jwt.withTokenValue("test-jwt").header("alg", "none").subject(ownerId.toString()).build();
+
+        SimulationReportingService mockReporting = mock(SimulationReportingService.class);
+        LiquidationMonitorService disabledMonitor = new LiquidationMonitorService(
+                mockReporting, new SessionStreamRegistry(), Clock.systemUTC(), false
+        );
+
+        RecordingJdbcTemplate jdbc = new RecordingJdbcTemplate();
+        // initial=10000: 1000 izole pozisyon (+150 unrealized), 2000 bekleyen limit rezervi, 7000 kullanılabilir
+        jdbc.openPositions.add(new PositionFixture(
+                UUID.randomUUID(), sessionId, BTC_ID, "LONG",
+                new BigDecimal("0.1"), new BigDecimal("50000"), new BigDecimal("1000"),
+                new BigDecimal("49000"), new BigDecimal("52500"),
+                Instant.parse("2026-11-10T10:00:00Z"), Instant.parse("2026-11-10T11:00:00Z"),
+                "CLOSE_AT_DEADLINE", BigDecimal.ZERO, BigDecimal.ZERO
+        ));
+        jdbc.sessionSummaryRow = new SessionSummaryFixture(
+                sessionId,
+                "Mixed Margin & Limit",
+                "LIVE_PAPER",
+                "RUNNING",
+                new BigDecimal("10000"),
+                new BigDecimal("7000"),
+                new BigDecimal("1000"),
+                new BigDecimal("2000"),
+                RULE_PROFILE,
+                UUID.fromString("99999999-9999-4999-8999-999999999999"),
+                1L,
+                Instant.parse("2026-11-10T10:00:00Z")
+        );
+        jdbc.cancellableOrderSessionId = sessionId;
+        jdbc.cancellableOrderReserved = new BigDecimal("2000");
+
+        SimulationMarketCatalog offlineWithFixedMark = new SimulationMarketCatalog(OBJECT_MAPPER, "http://127.0.0.1:1") {
+            @Override
+            public BigDecimal fetchLiveMarkPrice(UUID instrumentId, BigDecimal fallback) {
+                return new BigDecimal("51500"); // 0.1 * (51500 - 50000) = +150 unrealized
+            }
+        };
+
+        SessionController controller = new SessionController(
+                mock(CreateSession.class),
+                mock(AiPreviewService.class),
+                offlineWithFixedMark,
+                mockReporting,
+                disabledMonitor,
+                mock(OrderExecutionService.class),
+                new SessionStreamRegistry(),
+                jdbc,
+                OBJECT_MAPPER,
+                Clock.systemUTC()
+        );
+
+        Map<String, Object> resp = controller.listSessions(jwt);
+        List<Map<String, Object>> items = (List<Map<String, Object>>) resp.get("items");
+        assertEquals(1, items.size());
+        Map<String, Object> wallet = items.getFirst();
+
+        assertEquals("7000", wallet.get("availableBalance"));
+        assertEquals("1000", wallet.get("isolatedMargin"));
+        assertEquals("2000", wallet.get("reservedBalance"));
+        assertEquals("150", wallet.get("unrealizedPnl"));
+        assertEquals("0", wallet.get("realizedPnl"));
+        assertEquals("10150", Decimal.wire(new BigDecimal((String) wallet.get("equity"))));
+        assertEquals("150", wallet.get("netPnl"));
+
+        // Açık limit emri iptali rezervi 0'lar ve AVAILABLE'a yalnızca 1 kez iade eder
+        jdbc.updates.clear();
+        Map<String, Object> cancelRes = controller.cancelOrder(jwt, orderId);
+        assertEquals("CANCELLED", cancelRes.get("status"));
+        assertTrue(jdbc.updates.stream().anyMatch(u ->
+                u.sql().contains("SET status = 'CANCELLED', reserved_amount = 0")
+                        && u.sql().contains("status = 'NEW'")));
+        assertEquals(1L, jdbc.updates.stream().filter(u -> u.sql().contains("UPDATE wallet_accounts")).count());
+
+        // Eşzamanlı ikinci iptal (updated == 0) çift iade yapmadan reddedilmeli
+        jdbc.updates.clear();
+        jdbc.cancelUpdateRowCount = 0;
+        assertThrows(com.crypto.simulationservice.domain.exception.BusinessException.class,
+                () -> controller.cancelOrder(jwt, orderId));
+        assertTrue(jdbc.updates.stream().noneMatch(u -> u.sql().contains("UPDATE wallet_accounts")));
     }
 
     private static HistoricalCandle bar(
@@ -427,6 +517,9 @@ class OfflineHistoricalCatchUpUnitTest {
         Map<UUID, String> symbolByInstrumentId = Map.of();
         Map<UUID, Instant> lastEvaluatedByPosition = Map.of();
         SessionSummaryFixture sessionSummaryRow;
+        UUID cancellableOrderSessionId;
+        BigDecimal cancellableOrderReserved;
+        int cancelUpdateRowCount = 1;
 
         @Override
         public void execute(String sql) {
@@ -435,6 +528,9 @@ class OfflineHistoricalCatchUpUnitTest {
         @Override
         public int update(String sql, Object... args) {
             updates.add(new SqlUpdate(sql, args != null ? args : new Object[0]));
+            if (sql.contains("UPDATE orders") && sql.contains("SET status = 'CANCELLED'")) {
+                return cancelUpdateRowCount;
+            }
             return 1;
         }
 
@@ -467,6 +563,12 @@ class OfflineHistoricalCatchUpUnitTest {
                 if (sql.contains("FROM simulation_sessions s") && sql.contains("reserved_balance")
                         && sessionSummaryRow != null) {
                     result.add(rowMapper.mapRow(sessionSummaryResultSet(sessionSummaryRow), 0));
+                } else if (sql.contains("FROM orders o") && sql.contains("o.reserved_amount")
+                        && cancellableOrderSessionId != null) {
+                    ResultSet rs = mock(ResultSet.class);
+                    when(rs.getObject("session_id", UUID.class)).thenReturn(cancellableOrderSessionId);
+                    when(rs.getBigDecimal("reserved_amount")).thenReturn(cancellableOrderReserved);
+                    result.add(rowMapper.mapRow(rs, 0));
                 } else if (sql.contains("FROM positions p")) {
                     for (int i = 0; i < openPositions.size(); i++) {
                         result.add(rowMapper.mapRow(positionResultSet(openPositions.get(i)), i));
