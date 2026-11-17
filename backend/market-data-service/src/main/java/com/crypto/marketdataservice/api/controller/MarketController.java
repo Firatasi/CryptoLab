@@ -56,8 +56,8 @@ public class MarketController {
     private static final int MAX_UUID_CACHE_ENTRIES = 2_000;
     private static final int MAX_SSE_STREAMS = 500;
 
-    private static final long QUOTE_CACHE_TTL_MS = 400L;
-    private static final long CANDLE_CACHE_TTL_MS = 500L;
+    private static final long QUOTE_CACHE_TTL_MS = 200L;
+    private static final long CANDLE_CACHE_TTL_MS = 300L;
     private static final long TICKERS_BASE_REFRESH_MS = 10_000L;
 
     private final PublicMarketHttp binanceHttp;
@@ -190,6 +190,7 @@ public class MarketController {
             @RequestParam(defaultValue = "BTCUSDT") String instrumentId
     ) {
         String symbol = sanitizeSymbol(instrumentId);
+        streamHub.touchSymbol(symbol);
         Map<String, Object> liveWsQuote = streamHub.latestLiveQuote(symbol, 1_500L);
         if (liveWsQuote != null) {
             return liveWsQuote;
@@ -277,6 +278,7 @@ public class MarketController {
             @RequestParam(defaultValue = "120") int limit
     ) {
         String symbol = sanitizeSymbol(instrumentId);
+        streamHub.touchSymbol(symbol);
         String safeInterval = ALLOWED_INTERVALS.contains(interval) ? interval : "15m";
         int safeLimit = Math.min(Math.max(limit, 20), 300);
         String cacheKey = symbol + ":" + safeInterval + ":" + safeLimit;

@@ -46,6 +46,7 @@ import { ExecutionPlanCard } from './ExecutionPlanCard';
 import {
   type BracketInputMode,
   type OrderSizingDiagnosis,
+  buildLiquidationExceededMessage,
   diagnoseOrderSizing,
   formatFixedDecimal,
   parseFiniteDecimal,
@@ -84,6 +85,7 @@ export interface OrderTicketProps {
   instrument: InstrumentItem | null;
   sessionStatus?: string;
   sessionRiskPolicyId?: string | null;
+  availableBalance?: string | null;
   marketSnapshot?: MarketSnapshot | null;
   aiProposalSeed?: AiProposalSeed | null;
   onClearAiSeed?: () => void;
@@ -106,6 +108,7 @@ export function OrderTicket({
   instrument,
   sessionStatus = 'RUNNING',
   sessionRiskPolicyId = null,
+  availableBalance = null,
   marketSnapshot = null,
   aiProposalSeed = null,
   onClearAiSeed,
@@ -164,7 +167,9 @@ export function OrderTicket({
     const seedLimit = toDecimalInputString(aiProposalSeed.limitPrice, 8);
     const seedLeverage = toDecimalInputString(aiProposalSeed.suggestedLeverage, 2) || '2';
     const isStaleFixtureBracket = seedStopLoss === '110' && seedTakeProfit === '70';
-    setSource(isStaleFixtureBracket ? 'MANUAL' : 'AI_PROPOSAL');
+    // Keep source MANUAL so the user's marginBudget is never overridden by maxMarginPerTrade
+    // on the backend while still carrying originProposalId for traceability.
+    setSource('MANUAL');
     setOriginProposalId(isStaleFixtureBracket ? null : aiProposalSeed.proposalId);
     setProposalRevision(aiProposalSeed.revision);
     setSide(aiProposalSeed.side);
@@ -185,6 +190,14 @@ export function OrderTicket({
     submitKeyTrackerRef.current.reset();
   }, [aiProposalSeed]);
 
+  const parsedAvailableBalance = useMemo(() => parseFiniteDecimal(availableBalance), [availableBalance]);
+  const parsedMarginBudget = useMemo(() => parseFiniteDecimal(marginBudget), [marginBudget]);
+  const isBudgetAboveAvailable =
+    parsedAvailableBalance !== null &&
+    parsedMarginBudget !== null &&
+    parsedAvailableBalance > 0 &&
+    parsedMarginBudget > parsedAvailableBalance;
+
   const effectiveEntryPrice = useMemo(() => {
     if (orderType === 'LIMIT') {
       const lim = parseFiniteDecimal(limitPrice);
@@ -192,21 +205,43 @@ export function OrderTicket({
     }
     const snap = parseFiniteDecimal(marketSnapshot?.markPrice ?? null);
     if (snap !== null && snap > 0) return snap;
+    const last = parseFiniteDecimal(marketSnapshot?.lastPrice ?? null);
+    if (last !== null && last > 0) return last;
+    const bid = parseFiniteDecimal(marketSnapshot?.bid ?? null);
+    const ask = parseFiniteDecimal(marketSnapshot?.ask ?? null);
+    if (bid !== null && ask !== null && bid > 0 && ask > 0) {
+      return (bid + ask) / 2;
+    }
     const seedRef = parseFiniteDecimal(aiProposalSeed?.referenceEntry ?? null);
     return seedRef !== null && seedRef > 0 ? seedRef : null;
-  }, [aiProposalSeed?.referenceEntry, limitPrice, marketSnapshot?.markPrice, orderType]);
+  }, [
+    aiProposalSeed?.referenceEntry,
+    limitPrice,
+    marketSnapshot?.ask,
+    marketSnapshot?.bid,
+    marketSnapshot?.lastPrice,
+    marketSnapshot?.markPrice,
+    orderType,
+  ]);
 
   const sizingDiagnosis = useMemo(() => {
     return diagnoseOrderSizing({
       side,
       entryPrice: effectiveEntryPrice,
-      marginBudget: parseFiniteDecimal(marginBudget),
+      marginBudget: parsedMarginBudget,
       leverage: parseFiniteDecimal(leverage),
       minNotionalUsd: parseFiniteDecimal(instrument?.minNotional ?? null) ?? undefined,
+      availableBalance: parsedAvailableBalance,
     });
-  }, [effectiveEntryPrice, instrument?.minNotional, leverage, marginBudget, side]);
+  }, [effectiveEntryPrice, instrument?.minNotional, leverage, parsedAvailableBalance, parsedMarginBudget, side]);
 
   const orderSizing = sizingDiagnosis.ok ? sizingDiagnosis.estimate : null;
+  const effectiveMaxStopLossUsd = sizingDiagnosis.ok
+    ? sizingDiagnosis.estimate.maxSafeStopLossUsd
+    : sizingDiagnosis.budgetMaxSafeStopLossUsd;
+  const effectiveLiquidationLossUsd = sizingDiagnosis.ok
+    ? sizingDiagnosis.estimate.rawLiquidationLossUsd
+    : sizingDiagnosis.budgetRawLiquidationLossUsd;
 
   const resolvedSl = useMemo(
     () =>
@@ -287,6 +322,22 @@ export function OrderTicket({
 
   const switchTpMode = (nextMode: BracketInputMode) =>
     switchBracketMode('TP', tpMode, nextMode, takeProfit, resolvedTp, setTakeProfit, setTpMode);
+
+  const applyMaxSafeStopLoss = () => {
+    if (effectiveMaxStopLossUsd === null || !(effectiveMaxStopLossUsd > 0)) return;
+    if (slMode === 'USDT') {
+      setStopLoss(formatFixedDecimal(effectiveMaxStopLossUsd, 2));
+    } else if (orderSizing) {
+      const conv = stopLossPriceFromUsd(side, orderSizing, effectiveMaxStopLossUsd);
+      if (conv.price !== null) {
+        setStopLoss(formatFixedDecimal(conv.price, stepDecimals(orderSizing.tickSize)));
+      }
+    } else {
+      setSlMode('USDT');
+      setStopLoss(formatFixedDecimal(effectiveMaxStopLossUsd, 2));
+    }
+    invalidateActivePlanOnEdit();
+  };
 
   // 202 ACCEPTED sonrası komut durumu sorgulama (F04.6)
   const commandQuery = useQuery({
@@ -556,7 +607,7 @@ export function OrderTicket({
           </div>
         )}
 
-        {source === 'AI_PROPOSAL' && originProposalId && (
+        {originProposalId && (
           <div className="flex items-center justify-between gap-2 rounded-none border border-[#0a0a0a] bg-[#f5f5f5] px-3 py-2 text-xs text-[#0a0a0a]">
             <div className="flex items-center gap-1.5 min-w-0">
               <Sparkles className="h-3.5 w-3.5 shrink-0 text-[#0a0a0a]" aria-hidden="true" />
@@ -727,9 +778,11 @@ export function OrderTicket({
             <FieldGroup
               label="Teminat Bütçesi"
               hint={
-                source === 'AI_PROPOSAL' && originProposalId
-                  ? 'AI önerisi bütçesi sunucu risk politikasına göre belirlenir; kendi bütçeniz için tutarı düzenleyin.'
-                  : undefined
+                isBudgetAboveAvailable && parsedAvailableBalance !== null
+                  ? `Kullanılabilir bakiye: ${parsedAvailableBalance.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} USDT · Likidasyon sınırı mevcut bakiyenize göre hesaplandı.`
+                  : source === 'AI_PROPOSAL' && originProposalId
+                    ? 'AI önerisi bütçesi sunucu risk politikasına göre belirlenir; kendi bütçeniz için tutarı düzenleyin.'
+                    : undefined
               }
               required
             >
@@ -793,24 +846,26 @@ export function OrderTicket({
                   ? slMode === 'USDT'
                     ? resolvedSl.priceStr
                       ? `Tetik: ~${formatPrice(resolvedSl.priceStr)} USDT${
-                          orderSizing?.maxSafeStopLossUsd !== null && orderSizing?.maxSafeStopLossUsd !== undefined
-                            ? ` · Maks. ${orderSizing.maxSafeStopLossUsd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} USDT`
+                          effectiveMaxStopLossUsd !== null
+                            ? ` · Maks. ${effectiveMaxStopLossUsd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} USDT`
                             : ''
                         }`
-                      : orderSizing?.maxSafeStopLossUsd !== null && orderSizing?.maxSafeStopLossUsd !== undefined
-                        ? `Örn: 50 → 50 USDT zararda dur · Maks. ${orderSizing.maxSafeStopLossUsd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} USDT`
+                      : effectiveMaxStopLossUsd !== null
+                        ? `Örn: ${formatFixedDecimal(Math.min(50, effectiveMaxStopLossUsd), 2)} · Maks. ${effectiveMaxStopLossUsd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} USDT zarar girebilirsiniz`
                         : 'Zarar durdur tutarı (USDT)'
                     : resolvedSl.usdEstimate !== null
                       ? `Tahmini zarar: ~-${resolvedSl.usdEstimate.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT${
-                          orderSizing?.maxSafeStopLossUsd !== null && orderSizing?.maxSafeStopLossUsd !== undefined
-                            ? ` · Maks. ${orderSizing.maxSafeStopLossUsd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} USDT`
+                          effectiveMaxStopLossUsd !== null
+                            ? ` · Maks. ${effectiveMaxStopLossUsd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} USDT`
                             : ''
                         }`
                       : !sizingDiagnosis.ok &&
                           sizingDiagnosis.reason === 'BELOW_MIN_STEP_OR_NOTIONAL' &&
                           stopLoss.trim()
                         ? 'Min. lot altı · Zarar tahmini için teminat/kaldıracı artırın'
-                        : undefined
+                        : effectiveMaxStopLossUsd !== null
+                          ? `Maks. SL zararı: ${effectiveMaxStopLossUsd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} USDT`
+                          : undefined
                   : undefined
               }
               rightAddon={
@@ -852,7 +907,13 @@ export function OrderTicket({
                     invalidateActivePlanOnEdit();
                   }}
                   suffix={slMode === 'USDT' ? 'USDT' : undefined}
-                  placeholder={slMode === 'USDT' ? 'Örn: 50' : 'Opsiyonel'}
+                  placeholder={
+                    slMode === 'USDT'
+                      ? effectiveMaxStopLossUsd !== null
+                        ? `Maks: ${formatFixedDecimal(effectiveMaxStopLossUsd, 2)}`
+                        : 'Örn: 50'
+                      : 'Opsiyonel'
+                  }
                 />
               )}
             </FieldGroup>
@@ -919,6 +980,42 @@ export function OrderTicket({
               )}
             </FieldGroup>
           </div>
+
+          {resolvedSl.isLiquidationViolation && effectiveMaxStopLossUsd !== null && (
+            <div
+              data-testid="sl-liquidation-guard"
+              className="flex flex-wrap items-center justify-between gap-2 rounded-none border border-[#dc2626] bg-red-50 px-3 py-2 text-xs text-[#dc2626]"
+            >
+              <span className="font-medium">
+                Maks. güvenli SL:{' '}
+                {effectiveMaxStopLossUsd.toLocaleString('tr-TR', {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}{' '}
+                USDT
+                {effectiveLiquidationLossUsd !== null
+                  ? ` (~${effectiveLiquidationLossUsd.toLocaleString('tr-TR', {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })} USDT'de likid)`
+                  : ''}
+              </span>
+              {effectiveMaxStopLossUsd > 0 && (
+                <button
+                  type="button"
+                  onClick={applyMaxSafeStopLoss}
+                  className="shrink-0 rounded-none border border-[#dc2626] bg-white px-2 py-1 text-[11px] font-semibold text-[#dc2626] transition-colors hover:bg-[#dc2626] hover:text-white"
+                >
+                  Maks. Sınırı Uygula (
+                  {effectiveMaxStopLossUsd.toLocaleString('tr-TR', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}{' '}
+                  USDT)
+                </button>
+              )}
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-2.5">
             <FieldGroup label="İşlem Vadesi">
@@ -1040,6 +1137,22 @@ export function OrderTicket({
                               )
                             : '—'}
                         </div>
+                        {sizingDiagnosis.estimate.rawLiquidationLossUsd !== null && (
+                          <div className="font-sans text-[10px] text-[#525252]">
+                            ~-
+                            {sizingDiagnosis.estimate.rawLiquidationLossUsd.toLocaleString('tr-TR', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}{' '}
+                            USDT
+                            {sizingDiagnosis.estimate.maxSafeStopLossUsd !== null
+                              ? ` · Maks. SL ${sizingDiagnosis.estimate.maxSafeStopLossUsd.toLocaleString('tr-TR', {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })} USDT`
+                              : ''}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -1149,6 +1262,7 @@ interface ResolvedBracket {
   priceStr: string | null;
   usdEstimate: number | null;
   error: string | null;
+  isLiquidationViolation?: boolean;
 }
 
 function buildMinBudgetMessage(
@@ -1204,23 +1318,44 @@ function resolveBracketValue(params: {
     }
     const usdNum = Number(parsedUsd.normalized);
     if (!sizingDiagnosis.ok) {
+      if (
+        isSl &&
+        sizingDiagnosis.budgetMaxSafeStopLossUsd !== null &&
+        usdNum > sizingDiagnosis.budgetMaxSafeStopLossUsd
+      ) {
+        return {
+          priceStr: null,
+          usdEstimate: usdNum,
+          error: buildLiquidationExceededMessage(
+            sizingDiagnosis.budgetRawLiquidationLossUsd,
+            sizingDiagnosis.budgetMaxSafeStopLossUsd,
+          ),
+          isLiquidationViolation: true,
+        };
+      }
       const error = !effectiveEntryPrice
         ? `USDT ${isSl ? 'zarar' : 'kâr'} hesabı için piyasa fiyatı bekleniyor veya Limit fiyat girin.`
         : sizingDiagnosis.reason === 'BELOW_MIN_STEP_OR_NOTIONAL'
           ? buildMinBudgetMessage(sizingDiagnosis, baseAsset)
           : `USDT ${isSl ? 'zarar' : 'kâr hedefi'} hesaplamak için geçerli bir teminat bütçesi ve kaldıraç girin.`;
-      return { priceStr: null, usdEstimate: usdNum, error };
+      return { priceStr: null, usdEstimate: usdNum, error, isLiquidationViolation: false };
     }
     const conv = isSl
       ? stopLossPriceFromUsd(side, sizing!, usdNum)
       : takeProfitPriceFromUsd(side, sizing!, usdNum);
     if (conv.error || conv.price === null) {
-      return { priceStr: null, usdEstimate: usdNum, error: conv.error };
+      return {
+        priceStr: null,
+        usdEstimate: usdNum,
+        error: conv.error,
+        isLiquidationViolation: isSl && /likid|tasfiye/i.test(conv.error ?? ''),
+      };
     }
     return {
       priceStr: formatFixedDecimal(conv.price, stepDecimals(sizing!.tickSize)),
       usdEstimate: usdNum,
       error: null,
+      isLiquidationViolation: false,
     };
   }
 
@@ -1230,6 +1365,7 @@ function resolveBracketValue(params: {
       priceStr: null,
       usdEstimate: null,
       error: `${isSl ? 'Stop-Loss' : 'Take-Profit'}: ${parsedPrice.message}`,
+      isLiquidationViolation: false,
     };
   }
   const numPrice = Number(parsedPrice.normalized);
@@ -1239,5 +1375,6 @@ function resolveBracketValue(params: {
     priceStr: parsedPrice.normalized,
     usdEstimate: usdEst,
     error: liqErr,
+    isLiquidationViolation: Boolean(liqErr),
   };
 }

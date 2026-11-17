@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowRight, BrainCircuit } from 'lucide-react';
-import type { CandleInterval, InstrumentItem } from '@/shared/contracts/types';
+import type { CandleInterval, CandleSeriesResponse, InstrumentItem } from '@/shared/contracts/types';
 import { queryKeys } from '@/shared/api/queryKeys';
 import { useAuth } from '@/features/auth/AuthContext';
 import { loadPersistedJobs } from '@/shared/storage/jobPersistence';
@@ -13,10 +13,15 @@ import { marketApi } from './api';
 import { InstrumentSelector } from './InstrumentSelector';
 import { PriceCard } from './PriceCard';
 import { CandleChart } from './CandleChart';
-import { mergeLiveSnapshotIntoCandles, useLiveMarketQuoteStream } from './liveMarketStream';
+import {
+  mergeLiveSnapshotIntoCandles,
+  reconcileIncomingCandles,
+  useLiveMarketQuoteStream,
+} from './liveMarketStream';
 
 export function MarketPage() {
   const { user, timezone } = useAuth();
+  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedInstrument, setSelectedInstrument] = useState<InstrumentItem | null>(null);
 
@@ -26,6 +31,7 @@ export function MarketPage() {
   const stream = useLiveMarketQuoteStream({
     enabled: Boolean(selectedId),
     instrumentId: selectedId,
+    symbol: selectedInstrument?.symbol,
   });
 
   const quoteQuery = useQuery({
@@ -37,10 +43,18 @@ export function MarketPage() {
 
   const candlesQuery = useQuery({
     queryKey: queryKeys.market.candles(selectedId ?? '', intervalParam),
-    queryFn: ({ signal }) =>
-      marketApi.getCandles({ instrumentId: selectedId!, interval: intervalParam }, signal),
+    queryFn: async ({ signal }) => {
+      const next = await marketApi.getCandles(
+        { instrumentId: selectedId!, interval: intervalParam },
+        signal
+      );
+      const prev = queryClient.getQueryData<CandleSeriesResponse>(
+        queryKeys.market.candles(selectedId ?? '', intervalParam)
+      );
+      return reconcileIncomingCandles(prev, next);
+    },
     enabled: Boolean(selectedId),
-    refetchInterval: 3_000,
+    refetchInterval: intervalParam === '1m' ? 1_500 : 2_500,
   });
 
   const liveCandles = useMemo(

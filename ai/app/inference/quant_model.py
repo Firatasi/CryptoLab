@@ -424,12 +424,12 @@ class QuantHorizonModel:
     ) -> tuple[list[str], float, bool, bool, bool]:
         reason_codes: list[str] = [model_tag]
         htf_agrees = (direction > 0 and htf_trend_z > 0.25) or (direction < 0 and htf_trend_z < -0.25)
-        htf_conflicts = (direction > 0 and htf_trend_z < -0.75) or (direction < 0 and htf_trend_z > 0.75)
+        htf_conflicts = (direction > 0 and htf_trend_z < -0.55) or (direction < 0 and htf_trend_z > 0.55)
         is_choppy = eff_ratio < 0.18 and abs(ema_trend_z) < 0.50 and abs(bb_z) < 1.80 and extra_chop_escape < 0.65
         extreme_stress = vol_regime > 2.85 and atr_pct > 0.065
 
-        exhausted_long = direction > 0 and rsi_centered > 1.35 and bb_z > 2.2
-        exhausted_short = direction < 0 and rsi_centered < -1.35 and bb_z < -2.2
+        exhausted_long = direction > 0 and ((rsi_centered > 0.85 and bb_z > 1.55) or bb_z > 2.05)
+        exhausted_short = direction < 0 and ((rsi_centered < -0.85 and bb_z < -1.55) or bb_z < -2.05)
         crowded_funding = (direction > 0 and funding_bps > 4.5) or (direction < 0 and funding_bps < -4.5)
 
         conviction = base_conviction
@@ -437,7 +437,7 @@ class QuantHorizonModel:
             conviction += 0.08
             reason_codes.append("HTF_TREND_CONFIRMED")
         elif htf_conflicts:
-            conviction -= 0.11
+            conviction -= 0.15
             reason_codes.append("HTF_COUNTER_TREND")
         if volume_z > 0.35:
             conviction += 0.04
@@ -446,7 +446,7 @@ class QuantHorizonModel:
             conviction -= 0.15
             reason_codes.append("CHOPPY_REGIME")
         if exhausted_long or exhausted_short:
-            conviction -= 0.12
+            conviction -= 0.18
             reason_codes.append("MEAN_REVERSION_EXHAUSTION")
         if crowded_funding:
             conviction -= 0.05
@@ -481,10 +481,27 @@ class QuantHorizonModel:
         gbdt_ret = _clip(raw_gbdt_z * dyn_vol, -dyn_vol * 2.5, dyn_vol * 2.5)
         blended_ret = self.ensemble_blend * gbdt_ret + (1.0 - self.ensemble_blend) * raw_ridge
 
+        ret_1 = x[idx["ret_1"]]
+        ret_3 = x[idx["ret_3"]]
+        ema_macro_z = x[idx["ema_macro_z"]]
+        macd_hist_atr = x[idx["macd_hist_atr"]]
         taker_imbal_z = x[idx["taker_imbalance_z"]]
         cum_delta_z = x[idx["cum_delta_z"]]
+        vwap_dist_atr = x[idx["vwap_dist_atr"]]
         sweep_score = x[idx["liquidity_sweep_score"]]
         range_comp_z = x[idx["range_compression_z"]]
+        body_wick = x[idx["body_wick_imbalance"]]
+
+        ret_1_sig = _clip(ret_1 / max(dyn_vol * 0.25, 0.0004), -1.5, 1.5)
+        ret_3_sig = _clip(ret_3 / max(dyn_vol * 0.45, 0.0007), -1.5, 1.5)
+        live_impulse = (
+            0.26 * _clip(ema_trend_z / 1.5, -1.5, 1.5)
+            + 0.14 * _clip(ema_macro_z / 1.5, -1.5, 1.5)
+            + 0.22 * _clip(macd_hist_atr / 0.8, -1.5, 1.5)
+            + 0.18 * _clip(htf_trend_z / 1.2, -1.5, 1.5)
+            + 0.12 * _clip(taker_imbal_z + 0.5 * cum_delta_z + 0.2 * body_wick, -1.5, 1.5)
+            + 0.08 * _clip(0.5 * ret_1_sig + 0.5 * ret_3_sig, -1.5, 1.5)
+        )
 
         if self.gbdt_barrier_diff is not None:
             raw_bar_diff = eval_gbdt_raw(self.gbdt_barrier_diff, x)
@@ -496,10 +513,15 @@ class QuantHorizonModel:
             z_bar = raw_bar_diff / self.barrier_std
             z_lin = raw_lin / self.linear_std
             w_e, w_b, w_l = self.ensemble_weights
-            combined_dir = (
+            raw_ens_dir = (
                 w_e * _clip(z_edge, -3.0, 3.0)
                 + w_b * _clip(z_bar, -3.0, 3.0)
                 + w_l * _clip(z_lin, -3.0, 3.0)
+            )
+            combined_dir = (
+                0.35 * raw_ens_dir + 0.65 * live_impulse
+                if abs(live_impulse) >= 0.28
+                else 0.60 * raw_ens_dir + 0.40 * live_impulse
             )
             direction = 1.0 if combined_dir >= 0.0 else -1.0
             agree_count = (
@@ -507,6 +529,8 @@ class QuantHorizonModel:
                 + (1 if (z_bar * direction) > 0.02 else 0)
                 + (1 if (z_lin * direction) > 0.02 else 0)
             )
+            if (live_impulse * direction) > 0.15:
+                agree_count += 1
             oppose_count = (
                 (1 if (z_edge * direction) < -0.05 else 0)
                 + (1 if (z_bar * direction) < -0.05 else 0)
@@ -518,7 +542,7 @@ class QuantHorizonModel:
                 base_conv = (
                     0.535
                     + 0.14 * _clip((abs_dir - 0.42) / 1.08, 0.0, 1.0)
-                    + (0.02 if agree_count == 3 else 0.0)
+                    + (0.02 if agree_count >= 3 else 0.0)
                     + 0.04 * _clip(eff_ratio, 0.0, 1.0)
                 )
             elif models_agree:
@@ -534,10 +558,15 @@ class QuantHorizonModel:
             ev_short = p_short_raw * self.tp_r_multiple - (1.0 - p_short_raw) - self.fee_r_cost
             edge_z = blended_ret / dyn_vol
             barrier_z = (p_long_raw - p_short_raw) / 0.08
-            combined_dir = (
+            raw_ens_dir = (
                 0.46 * _clip(edge_z, -2.5, 2.5)
                 + 0.44 * _clip(barrier_z, -2.5, 2.5)
                 + 0.10 * _clip(trend_composite, -2.0, 2.0)
+            )
+            combined_dir = (
+                0.35 * raw_ens_dir + 0.65 * live_impulse
+                if abs(live_impulse) >= 0.28
+                else 0.60 * raw_ens_dir + 0.40 * live_impulse
             )
             direction = 1.0 if combined_dir >= 0.0 else -1.0
             models_agree = (edge_z * barrier_z) > 0.0
@@ -581,21 +610,56 @@ class QuantHorizonModel:
         if range_comp_z < -0.55 and abs(combined_dir) > 0.45:
             reason_codes.append("SQUEEZE_BREAKOUT_SETUP")
 
+        vwap_overextended_long = direction > 0 and vwap_dist_atr > 2.15 and taker_imbal_z < 0.15
+        vwap_overextended_short = direction < 0 and vwap_dist_atr < -2.15 and taker_imbal_z > -0.15
+        if vwap_overextended_long or vwap_overextended_short:
+            if "MEAN_REVERSION_EXHAUSTION" not in reason_codes:
+                reason_codes.append("MEAN_REVERSION_EXHAUSTION")
+            conviction -= 0.14
+
+        if (
+            htf_agrees
+            and (direction * ema_trend_z) >= 0.25
+            and (flow_confirms or (abs(sweep_score) >= 0.55 and (sweep_score * direction) > 0))
+        ):
+            reason_codes.append("TRIPLE_CONFLUENCE_CONFIRMED")
+            conviction += 0.06
+
+        if (live_impulse * direction) > 0.15:
+            conviction += 0.05
+            reason_codes.append("IMPULSE_MOMENTUM_ALIGNED")
+        elif (live_impulse * direction) < -0.22 or (
+            (raw_ens_dir * live_impulse) < -0.22 and abs(live_impulse) >= 0.28 and abs(raw_ens_dir) >= 0.25
+        ):
+            conviction -= 0.14
+            if "LOW_CONFIDENCE" not in reason_codes:
+                reason_codes.append("LOW_CONFIDENCE")
+
         min_conf = 0.18 if extreme_stress else 0.24
         signal_confidence = _clip(conviction, min_conf, 0.94)
         if self.gbdt_barrier_diff is not None and (not models_agree or abs(combined_dir) < 0.42):
             signal_confidence = min(signal_confidence, 0.49)
+        if (live_impulse * direction) < -0.22 or (
+            (raw_ens_dir * live_impulse) < -0.22 and abs(live_impulse) >= 0.28 and abs(raw_ens_dir) >= 0.25
+        ):
+            signal_confidence = min(signal_confidence, 0.46)
+        if "HTF_COUNTER_TREND" in reason_codes and "ORDER_FLOW_DIVERGENCE" in reason_codes:
+            signal_confidence = min(signal_confidence, 0.45)
 
         if self.gbdt_barrier_diff is not None:
+            triple_confirmed = "TRIPLE_CONFLUENCE_CONFIRMED" in reason_codes
+            exhausted = "MEAN_REVERSION_EXHAUSTION" in reason_codes
             win_prob = _clip(
-                0.43
+                0.54
                 + 0.08 * _clip((abs(combined_dir) - 0.30) / 1.20, 0.0, 1.0)
                 + (0.04 if models_agree else -0.04)
-                + (0.025 if htf_agrees else 0.0)
-                + (0.025 if flow_confirms else 0.0)
-                - (0.05 if is_choppy else 0.0),
-                0.36,
-                0.68,
+                + (0.03 if htf_agrees else 0.0)
+                + (0.03 if flow_confirms else 0.0)
+                + (0.04 if triple_confirmed else 0.0)
+                - (0.06 if is_choppy else 0.0)
+                - (0.07 if exhausted else 0.0),
+                0.42,
+                0.76,
             )
             p_long = win_prob if direction > 0 else _clip(1.0 - win_prob - 0.08, 0.24, 0.60)
             p_short = win_prob if direction < 0 else _clip(1.0 - win_prob - 0.08, 0.24, 0.60)

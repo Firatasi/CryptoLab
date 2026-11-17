@@ -121,6 +121,12 @@ export function SessionsPage() {
     },
     onSuccess: (_, variables) => {
       setConfirmState(null);
+      if (variables.action === 'DELETE') {
+        savePersistedJobs(user?.id, (prev) => ({
+          ...prev,
+          activeSessionId: prev.activeSessionId === variables.session.id ? null : prev.activeSessionId,
+        }));
+      }
       void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.sessions.detail(variables.session.id),

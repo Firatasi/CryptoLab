@@ -81,18 +81,38 @@ public final class AdaptiveNumericPolicy {
         if (reasons.contains("VOLATILITY_REGIME_UNSAFE") || "HIGH_VOL_STRESS".equals(regime)) {
             return new NumericPolicy.Outcome("WAIT", null, null, null, "VOLATILITY_REGIME_UNSAFE");
         }
-        if (reasons.contains("CHOPPY_REGIME") && !"HIGH".equals(riskLevel)) {
+        boolean isV4 = reasons.contains("QUANT_MODEL_V4");
+        if (reasons.contains("CHOPPY_REGIME") && (isV4 || !"HIGH".equals(riskLevel))) {
             return new NumericPolicy.Outcome("WAIT", null, null, null, "CHOPPY_MARKET_WAIT");
         }
-        if (reasons.contains("LOW_CONFIDENCE") && !"HIGH".equals(riskLevel)) {
+        if (reasons.contains("LOW_CONFIDENCE") && (isV4 || !"HIGH".equals(riskLevel))) {
             return new NumericPolicy.Outcome("WAIT", null, null, null, "LOW_MODEL_CONFIDENCE");
         }
+        if (reasons.contains("MEAN_REVERSION_EXHAUSTION")
+                && (!"HIGH".equals(riskLevel) || signalConfidence < 0.58)) {
+            return new NumericPolicy.Outcome("WAIT", null, null, null, "EXHAUSTION_REVERSAL_RISK");
+        }
+        if (reasons.contains("HTF_COUNTER_TREND") && reasons.contains("ORDER_FLOW_DIVERGENCE")) {
+            return new NumericPolicy.Outcome("WAIT", null, null, null, "COUNTER_TREND_FLOW_CONFLICT");
+        }
+        if (isV4 && reasons.contains("HTF_COUNTER_TREND") && !reasons.contains("ORDER_FLOW_CONFIRMED")) {
+            return new NumericPolicy.Outcome("WAIT", null, null, null, "HTF_COUNTER_TREND_WAIT");
+        }
+        if (reasons.contains("HTF_COUNTER_TREND") && !"HIGH".equals(riskLevel) && signalConfidence < 0.65) {
+            return new NumericPolicy.Outcome("WAIT", null, null, null, "HTF_COUNTER_TREND_WAIT");
+        }
 
-        double minConfidence = switch (riskLevel) {
-            case "LOW" -> 0.56;
-            case "HIGH" -> 0.22;
-            default -> 0.53;
-        };
+        double minConfidence = isV4
+                ? switch (riskLevel) {
+                    case "LOW" -> 0.58;
+                    case "HIGH" -> 0.50;
+                    default -> 0.54;
+                }
+                : switch (riskLevel) {
+                    case "LOW" -> 0.58;
+                    case "HIGH" -> 0.38;
+                    default -> 0.54;
+                };
         if (signalConfidence < minConfidence) {
             return new NumericPolicy.Outcome("WAIT", null, null, null, "CONFIDENCE_BELOW_RISK_THRESHOLD");
         }
@@ -101,11 +121,17 @@ public final class AdaptiveNumericPolicy {
         double absExpectedReturn = Math.abs(Math.expm1(predLogRet));
         double cost = Math.max(0.0, estimatedRoundTripCost);
         int h = prediction.horizonSeconds();
-        double minMove = switch (riskLevel) {
-            case "LOW" -> Math.max(cost * 2.10, h <= 60 ? 0.0009 : (h <= 900 ? 0.0014 : 0.0018));
-            case "HIGH" -> Math.max(cost * 0.70, h <= 60 ? 0.00025 : 0.00040);
-            default -> Math.max(cost * 1.65, h <= 60 ? 0.0007 : (h <= 900 ? 0.0011 : 0.0015));
-        };
+        double minMove = isV4
+                ? switch (riskLevel) {
+                    case "LOW" -> Math.max(cost * 2.10, h <= 60 ? 0.0012 : 0.0018);
+                    case "HIGH" -> Math.max(cost * 1.25, h <= 60 ? 0.0012 : 0.0016);
+                    default -> Math.max(cost * 1.65, h <= 60 ? 0.0012 : 0.0016);
+                }
+                : switch (riskLevel) {
+                    case "LOW" -> Math.max(cost * 2.10, h <= 60 ? 0.0009 : (h <= 900 ? 0.0014 : 0.0018));
+                    case "HIGH" -> Math.max(cost * 0.85, h <= 60 ? 0.00040 : 0.00060);
+                    default -> Math.max(cost * 1.65, h <= 60 ? 0.0007 : (h <= 900 ? 0.0011 : 0.0015));
+                };
         if (absExpectedReturn < minMove) {
             return new NumericPolicy.Outcome("WAIT", null, null, null, "EDGE_BELOW_COST_HURDLE");
         }
@@ -118,39 +144,60 @@ public final class AdaptiveNumericPolicy {
         double modelVol = Math.max(0.0, prediction.volatilityEstimate());
         double effVolFrac = Math.max(atrFrac, Math.min(modelVol * 0.65, 0.10));
 
-        double horizonMinSlPct = h <= 60 ? 0.0022
-                : (h <= 900 ? 0.0040
-                : (h <= 3600 ? 0.0065
-                : (h <= 86400 ? 0.0120 : 0.0220)));
+        double horizonMinSlPct = isV4
+                ? (h <= 60 ? 0.0048
+                : (h <= 900 ? 0.0068
+                : (h <= 3600 ? 0.0095
+                : (h <= 86400 ? 0.0140 : 0.0240))))
+                : (h <= 60 ? 0.0032
+                : (h <= 900 ? 0.0050
+                : (h <= 3600 ? 0.0080
+                : (h <= 86400 ? 0.0140 : 0.0240))));
 
-        double slMult = switch (riskLevel) {
-            case "LOW" -> 1.40;
-            case "HIGH" -> 1.85;
-            default -> 1.65;
-        };
-        if (reasons.contains("HTF_TREND_CONFIRMED")) {
-            slMult *= 0.92;
-        }
+        double slMult = isV4
+                ? switch (riskLevel) {
+                    case "LOW" -> 2.40;
+                    case "HIGH" -> 2.80;
+                    default -> 2.60;
+                }
+                : switch (riskLevel) {
+                    case "LOW" -> 2.00;
+                    case "HIGH" -> 2.30;
+                    default -> 2.15;
+                };
         if (volRegimeRatio > 1.80) {
             slMult *= 1.15;
         }
         double stopDistPct = clamp(effVolFrac * slMult, horizonMinSlPct, 0.085);
 
-        double baseRr = switch (riskLevel) {
-            case "LOW" -> 2.10;
-            case "HIGH" -> 1.85;
-            default -> 2.00;
-        };
-        double rrBoost = 0.45 * clamp((signalConfidence - 0.50) / 0.40, 0.0, 1.0)
-                + 0.30 * clamp(efficiencyRatio, 0.0, 1.0);
-        if (reasons.contains("HTF_TREND_CONFIRMED")) {
-            rrBoost += 0.25;
+        double tpDistPct;
+        if (isV4) {
+            double minNetTp = Math.max(
+                    cost * 1.45,
+                    h <= 60 ? 0.0014 : (h <= 900 ? 0.0018 : (h <= 3600 ? 0.0024 : 0.0036))
+            );
+            double atrTpMult = h <= 60 ? 0.90 : (h <= 900 ? 0.75 : (h <= 3600 ? 0.65 : 0.55));
+            double rawTpDistPct = Math.max(minNetTp, effVolFrac * atrTpMult);
+            double tpCapPct = Math.max(minNetTp, stopDistPct * 0.42);
+            tpDistPct = clamp(Math.min(rawTpDistPct, tpCapPct), minNetTp, 0.18);
+        } else {
+            double baseRr = switch (riskLevel) {
+                case "LOW" -> 0.68;
+                case "HIGH" -> 0.85;
+                default -> 0.76;
+            };
+            double rrBoost = 0.16 * clamp((signalConfidence - 0.50) / 0.40, 0.0, 1.0)
+                    + 0.10 * clamp(efficiencyRatio, 0.0, 1.0);
+            if (reasons.contains("TRIPLE_CONFLUENCE_CONFIRMED") || reasons.contains("HTF_TREND_CONFIRMED")) {
+                rrBoost += 0.10;
+            }
+            if (reasons.contains("MEAN_REVERSION_EXHAUSTION")) {
+                rrBoost -= 0.15;
+            }
+            double rrRatio = clamp(baseRr + rrBoost, 0.65, 1.05);
+            double minProfitableTp = Math.max(stopDistPct * 0.65, cost * 2.80);
+            tpDistPct = clamp(Math.max(stopDistPct * rrRatio, minProfitableTp), minProfitableTp, 0.18);
         }
-        if (reasons.contains("MEAN_REVERSION_EXHAUSTION")) {
-            rrBoost -= 0.25;
-        }
-        double rrRatio = clamp(baseRr + rrBoost, 1.60, 3.20);
-        double tpDistPct = clamp(Math.max(stopDistPct * rrRatio, absExpectedReturn * 1.15), stopDistPct * 1.60, 0.28);
 
         int scale = entryPrice.compareTo(BigDecimal.ONE) < 0 ? 5
                 : (entryPrice.compareTo(BigDecimal.TEN) < 0 ? 4
@@ -191,19 +238,24 @@ public final class AdaptiveNumericPolicy {
 
         // Optimal leverage: SL must strictly execute before isolated liquidation + buffer
         double safetyFactor = switch (riskLevel) {
-            case "LOW" -> 2.00;
-            case "HIGH" -> 1.55;
-            default -> 1.75;
+            case "LOW" -> 3.20;
+            case "HIGH" -> 2.40;
+            default -> 2.75;
         };
-        int liqSafeMax = (int) Math.floor(1.0 / (stopDistPct * safetyFactor + 0.008));
+        int liqSafeMax = (int) Math.floor(1.0 / (stopDistPct * safetyFactor + 0.012));
+        int horizonLevCap = switch (riskLevel) {
+            case "LOW" -> h <= 60 ? 3 : (h <= 3600 ? 5 : 4);
+            case "HIGH" -> h <= 60 ? 8 : (h <= 900 ? 10 : (h <= 3600 ? 12 : (h <= 86400 ? 10 : 7)));
+            default -> h <= 60 ? 5 : (h <= 900 ? 7 : (h <= 3600 ? 8 : (h <= 86400 ? 6 : 5)));
+        };
         int effSessionCap = Math.max(1, sessionMaxLeverage);
         int effInstCap = Math.max(1, instrumentMaxLeverage);
-        int hardCap = Math.max(1, Math.min(Math.min(effSessionCap, effInstCap), Math.max(1, liqSafeMax)));
+        int hardCap = Math.max(1, Math.min(Math.min(effSessionCap, effInstCap), Math.min(horizonLevCap, Math.max(1, liqSafeMax))));
 
         double baseMarginRisk = switch (riskLevel) {
-            case "LOW" -> 0.06;
-            case "HIGH" -> 0.34;
-            default -> 0.15;
+            case "LOW" -> 0.045;
+            case "HIGH" -> 0.115;
+            default -> 0.075;
         };
         double convScale = 0.72 + 0.68 * clamp((signalConfidence - 0.50) / 0.40, 0.0, 1.0);
         double volDamper = volRegimeRatio > 1.25 ? (1.0 / (0.85 + 0.25 * volRegimeRatio)) : 1.0;

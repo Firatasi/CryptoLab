@@ -79,11 +79,16 @@ public class BinanceFuturesStreamHub {
             t.setDaemon(true);
             return t;
         });
-        this.scheduler.scheduleWithFixedDelay(this::flushLoopSafely, 250L, 250L, TimeUnit.MILLISECONDS);
+        this.scheduler.scheduleWithFixedDelay(this::flushLoopSafely, 100L, 100L, TimeUnit.MILLISECONDS);
     }
 
     public static BinanceFuturesStreamHub disabled(ObjectMapper objectMapper) {
         return new BinanceFuturesStreamHub(objectMapper, false);
+    }
+
+    public void touchSymbol(String symbol) {
+        ensureMarketSocket();
+        ensureSymbolSocket(symbol);
     }
 
     public void markWatchlistActive() {
@@ -627,6 +632,8 @@ public class BinanceFuturesStreamHub {
         private volatile long tradeCount = 0L;
         private volatile long sourceTimeMs = 0L;
         private volatile long receivedAtMs = 0L;
+        private volatile long lastAggTradeAtMs = 0L;
+        private volatile long lastMarkPriceAtMs = 0L;
         private volatile long tickerUpdatedAtMs = 0L;
 
         private LiveSymbolState(String symbol) {
@@ -664,6 +671,7 @@ public class BinanceFuturesStreamHub {
                 return;
             }
             this.lastPrice = price;
+            this.lastAggTradeAtMs = nowMs;
             this.sourceTimeMs = data.path("E").asLong(nowMs);
             this.receivedAtMs = nowMs;
             this.version.incrementAndGet();
@@ -677,6 +685,23 @@ public class BinanceFuturesStreamHub {
             }
             this.bid = nextBid;
             this.ask = nextAsk;
+            if (this.lastPrice == null || (nowMs - this.lastAggTradeAtMs) > 250L) {
+                this.lastPrice = nextBid;
+            }
+            boolean markStale = (nowMs - this.lastMarkPriceAtMs) > 1000L;
+            if (this.markPrice == null || markStale || this.indexPrice == null) {
+                String midpoint = nonBlankNormalized(new java.math.BigDecimal(nextBid)
+                        .add(new java.math.BigDecimal(nextAsk))
+                        .multiply(new java.math.BigDecimal("0.5"))
+                        .toPlainString());
+                String fallbackMark = midpoint != null ? midpoint : nextBid;
+                if (this.markPrice == null || markStale) {
+                    this.markPrice = fallbackMark;
+                }
+                if (this.indexPrice == null || markStale) {
+                    this.indexPrice = fallbackMark;
+                }
+            }
             this.sourceTimeMs = data.path("E").asLong(nowMs);
             this.receivedAtMs = nowMs;
             this.version.incrementAndGet();
@@ -696,6 +721,7 @@ public class BinanceFuturesStreamHub {
             if (!nextFunding.isBlank()) {
                 this.fundingRate = nextFunding;
             }
+            this.lastMarkPriceAtMs = nowMs;
             this.sourceTimeMs = data.path("E").asLong(nowMs);
             this.receivedAtMs = nowMs;
             this.version.incrementAndGet();
@@ -731,22 +757,26 @@ public class BinanceFuturesStreamHub {
             if (receivedAtMs == 0L || (nowMs - receivedAtMs) > maxAgeMs) {
                 return null;
             }
-            if (lastPrice == null || markPrice == null || bid == null || ask == null) {
+            String effLast = lastPrice != null ? lastPrice : markPrice;
+            if (effLast == null) {
                 return null;
             }
+            String effMark = markPrice != null ? markPrice : effLast;
+            String effBid = bid != null ? bid : effLast;
+            String effAsk = ask != null ? ask : effLast;
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("instrumentId", symbol);
             out.put("symbol", symbol);
-            out.put("markPrice", markPrice);
-            out.put("lastPrice", lastPrice);
-            out.put("bid", bid);
-            out.put("ask", ask);
-            out.put("indexPrice", indexPrice != null ? indexPrice : markPrice);
+            out.put("markPrice", effMark);
+            out.put("lastPrice", effLast);
+            out.put("bid", effBid);
+            out.put("ask", effAsk);
+            out.put("indexPrice", indexPrice != null ? indexPrice : effMark);
             out.put("fundingRate", fundingRate);
             out.put("priceChange", priceChange);
             out.put("priceChangePercent", priceChangePercent);
-            out.put("high24h", high24h != null ? high24h : lastPrice);
-            out.put("low24h", low24h != null ? low24h : lastPrice);
+            out.put("high24h", high24h != null ? high24h : effLast);
+            out.put("low24h", low24h != null ? low24h : effLast);
             out.put("volume24h", volume24h);
             out.put("quoteVolume24h", quoteVolume24h);
             long srcMs = sourceTimeMs > 0L ? sourceTimeMs : nowMs;

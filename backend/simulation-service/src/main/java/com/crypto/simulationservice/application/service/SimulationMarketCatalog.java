@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -124,7 +125,7 @@ public class SimulationMarketCatalog {
     public Optional<BigDecimal> fetchLiveMarkPriceIfAvailable(UUID instrumentId) {
         long nowMs = System.currentTimeMillis();
         CachedMarkPrice cached = livePriceCache.get(instrumentId);
-        if (cached != null && nowMs - cached.timestampMs() < 1500L) {
+        if (cached != null && nowMs - cached.timestampMs() < 400L) {
             return Optional.of(cached.price());
         }
         String symbol = resolveSymbol(instrumentId);
@@ -137,18 +138,42 @@ public class SimulationMarketCatalog {
             var resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 200) {
                 JsonNode root = objectMapper.readTree(resp.body());
-                String markStr = root.path("markPrice").asText("");
-                if (!markStr.isBlank()) {
-                    BigDecimal live = Decimal.parse(markStr);
-                    if (live.signum() > 0) {
-                        livePriceCache.put(instrumentId, new CachedMarkPrice(nowMs, live));
-                        return Optional.of(live);
+                BigDecimal bid = parsePositiveDecimal(root.path("bid").asText(""));
+                BigDecimal ask = parsePositiveDecimal(root.path("ask").asText(""));
+                BigDecimal midpoint = (bid != null && ask != null)
+                        ? bid.add(ask).divide(BigDecimal.valueOf(2), Math.max(bid.scale(), ask.scale()) + 2, RoundingMode.HALF_UP).stripTrailingZeros()
+                        : null;
+                BigDecimal mark = parsePositiveDecimal(root.path("markPrice").asText(""));
+                BigDecimal last = parsePositiveDecimal(root.path("lastPrice").asText(""));
+                BigDecimal candidate = mark != null ? mark : last;
+                if (candidate != null && bid != null && ask != null) {
+                    BigDecimal lowGuard = bid.min(ask).multiply(new BigDecimal("0.999"));
+                    BigDecimal highGuard = bid.max(ask).multiply(new BigDecimal("1.001"));
+                    if (candidate.compareTo(lowGuard) < 0 || candidate.compareTo(highGuard) > 0) {
+                        candidate = midpoint;
                     }
+                }
+                BigDecimal live = candidate != null ? candidate : midpoint;
+                if (live != null && live.signum() > 0) {
+                    livePriceCache.put(instrumentId, new CachedMarkPrice(nowMs, live));
+                    return Optional.of(live);
                 }
             }
         } catch (Exception ignored) {
         }
         return Optional.empty();
+    }
+
+    private static BigDecimal parsePositiveDecimal(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            BigDecimal parsed = Decimal.parse(raw.trim());
+            return parsed.signum() > 0 ? parsed : null;
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     public static BigDecimal resolveTakerFeeRate(UUID ruleProfileId, String orderType) {

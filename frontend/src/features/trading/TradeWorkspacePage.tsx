@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, BrainCircuit, CheckCircle2, History, X } from 'lucide-react';
-import type { CandleInterval, InstrumentItem } from '@/shared/contracts/types';
+import type { CandleInterval, CandleSeriesResponse, InstrumentItem } from '@/shared/contracts/types';
 import { queryKeys } from '@/shared/api/queryKeys';
 import { useAuth } from '@/features/auth/AuthContext';
 import { savePersistedJobs } from '@/shared/storage/jobPersistence';
@@ -14,6 +14,7 @@ import { PriceCard } from '@/features/market/PriceCard';
 import { CandleChart } from '@/features/market/CandleChart';
 import {
   mergeLiveSnapshotIntoCandles,
+  reconcileIncomingCandles,
   useLiveMarketQuoteStream,
 } from '@/features/market/liveMarketStream';
 import { sessionsApi } from '@/features/sessions/api';
@@ -171,15 +172,16 @@ export function TradeWorkspacePage() {
   });
 
   useEffect(() => {
-    const resolvedId = sessionQuery.data?.id || sessionId;
+    const resolvedId = sessionQuery.data?.id;
     if (resolvedId) {
       savePersistedJobs(user?.id, (prev) => ({ ...prev, activeSessionId: resolvedId }));
     }
-  }, [sessionId, sessionQuery.data?.id, user?.id]);
+  }, [sessionQuery.data?.id, user?.id]);
 
   const marketStream = useLiveMarketQuoteStream({
     enabled: Boolean(selectedInstrumentId),
     instrumentId: selectedInstrumentId,
+    symbol: selectedInstrument?.symbol ?? aiSeed?.symbol,
   });
 
   const quoteQuery = useQuery({
@@ -191,13 +193,18 @@ export function TradeWorkspacePage() {
 
   const candlesQuery = useQuery({
     queryKey: queryKeys.market.candles(selectedInstrumentId ?? '', chartInterval),
-    queryFn: ({ signal }) =>
-      marketApi.getCandles(
+    queryFn: async ({ signal }) => {
+      const next = await marketApi.getCandles(
         { instrumentId: selectedInstrumentId!, interval: chartInterval },
         signal
-      ),
+      );
+      const prev = queryClient.getQueryData<CandleSeriesResponse>(
+        queryKeys.market.candles(selectedInstrumentId ?? '', chartInterval)
+      );
+      return reconcileIncomingCandles(prev, next);
+    },
     enabled: Boolean(selectedInstrumentId),
-    refetchInterval: 3_000,
+    refetchInterval: chartInterval === '1m' ? 1_500 : 2_500,
   });
 
   const liveCandles = useMemo(
@@ -208,7 +215,7 @@ export function TradeWorkspacePage() {
   const positionsQuery = useQuery({
     queryKey: queryKeys.trading.positions(effectiveSessionId),
     queryFn: ({ signal }) => tradingApi.listPositions(effectiveSessionId, signal),
-    enabled: Boolean(effectiveSessionId),
+    enabled: Boolean(effectiveSessionId) && !sessionQuery.isError,
     refetchInterval: (query) =>
       (query.state.data?.items?.length ?? 0) > 0
         ? 2_000
@@ -220,7 +227,7 @@ export function TradeWorkspacePage() {
   const openOrdersQuery = useQuery({
     queryKey: queryKeys.trading.openOrders(effectiveSessionId),
     queryFn: ({ signal }) => tradingApi.listOpenOrders(effectiveSessionId, signal),
-    enabled: Boolean(effectiveSessionId),
+    enabled: Boolean(effectiveSessionId) && !sessionQuery.isError,
     refetchInterval: sessionStream.status === 'LIVE' ? false : 8_000,
   });
 
@@ -347,11 +354,21 @@ export function TradeWorkspacePage() {
       )}
 
       {sessionQuery.isError && (
-        <ErrorBanner
-          error={sessionQuery.error}
-          title="Oturum bilgisi yüklenemedi"
-          onRetry={() => void sessionQuery.refetch()}
-        />
+        <div className="space-y-2">
+          <ErrorBanner
+            error={sessionQuery.error}
+            title="Oturum bilgisi yüklenemedi"
+            onRetry={() => void sessionQuery.refetch()}
+          />
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-none border border-[#e5e5e5] bg-[#f5f5f5] px-4 py-2.5 text-xs text-[#525252]">
+            <span>Aktif sanal cüzdan bulunamadıysa Oturumlar ekranından yeni bir cüzdan oluşturabilirsiniz.</span>
+            <Link to="/sessions">
+              <Button variant="primary" size="xs">
+                Oturumlar Sayfasına Git
+              </Button>
+            </Link>
+          </div>
+        </div>
       )}
 
       {/* 3 Sütunlu Kurumsal Terminal Düzeni */}
@@ -470,6 +487,7 @@ export function TradeWorkspacePage() {
             instrument={selectedInstrument}
             sessionStatus={sessionQuery.data?.status ?? 'RUNNING'}
             sessionRiskPolicyId={sessionQuery.data?.riskPolicyId ?? null}
+            availableBalance={sessionQuery.data?.availableBalance ?? null}
             marketSnapshot={quoteQuery.data ?? null}
             aiProposalSeed={aiSeed}
             onClearAiSeed={() => setAiSeed(null)}

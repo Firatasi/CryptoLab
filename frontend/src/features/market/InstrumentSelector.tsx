@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Search, SlidersHorizontal } from 'lucide-react';
+import { Search, SlidersHorizontal, Star } from 'lucide-react';
 import type { InstrumentItem } from '@/shared/contracts/types';
 import { queryKeys } from '@/shared/api/queryKeys';
 import { formatReasonCode } from '@/shared/formatting/formatters';
@@ -8,6 +8,7 @@ import { Badge, Button, Card, Skeleton } from '@/shared/ui/Primitives';
 import { ErrorBanner, EmptyState } from '@/shared/ui/Feedback';
 import { cn } from '@/shared/ui/cn';
 import { marketApi } from './api';
+import { useFavoriteInstruments } from './useFavoriteInstruments';
 
 const UUID_TO_SYMBOL: Record<string, string> = {
   '11111111-1111-4111-8111-111111111111': 'BTCUSDT',
@@ -41,6 +42,7 @@ export function InstrumentSelector({
   hasSelectedInstrument,
   compact = false,
 }: InstrumentSelectorProps) {
+  const { canFavorite, isFavorite, toggleFavorite, partitionByFavorites } = useFavoriteInstruments();
   const [rawSearch, setRawSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [onlyTradable, setOnlyTradable] = useState(false);
@@ -107,6 +109,7 @@ export function InstrumentSelector({
     !items.some((it) => it.instrumentId === matchedFromLookup.instrumentId)
       ? [matchedFromLookup, ...items]
       : items;
+  const orderedItems = partitionByFavorites(displayItems);
 
   // İlk yüklemede veya URL UUID / sembolü ile gelindiğinde ilgili sözleşmeyi otomatik seç
   useEffect(() => {
@@ -202,78 +205,111 @@ export function InstrumentSelector({
             title="Enstrüman kataloğu yüklenemedi"
             onRetry={() => void catalogQuery.refetch()}
           />
-        ) : displayItems.length === 0 ? (
+        ) : orderedItems.length === 0 ? (
           <EmptyState
             title="Eşleşen sözleşme bulunamadı"
             description="Arama filtresini temizleyerek tüm sözleşmeleri görüntüleyebilirsiniz."
           />
         ) : (
-          displayItems.map((item) => {
+          orderedItems.map((item) => {
             const isSelected =
               item.instrumentId === selectedInstrumentId ||
               (targetLookup !== null && item.symbol.toUpperCase() === targetLookup);
             const { paperTradable, analysisReady, reasonCodes } = item.capabilities;
+            const fav = isFavorite(item.symbol);
 
             return (
-              <button
+              <div
                 key={item.instrumentId}
-                type="button"
-                onClick={() => onSelectInstrument(item)}
+                data-testid={`instrument-row-${item.symbol}`}
                 className={cn(
-                  'w-full rounded-none border px-2.5 py-2 text-left transition-colors',
+                  'flex w-full items-stretch rounded-none border transition-colors',
                   isSelected
                     ? 'border-[#0a0a0a] bg-[#0a0a0a] text-white'
                     : 'border-[#e5e5e5] bg-white text-[#0a0a0a] hover:border-[#0a0a0a] hover:bg-[#f5f5f5]'
                 )}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span
-                      className={cn(
-                        'h-1.5 w-1.5 shrink-0 rounded-full',
-                        paperTradable
-                          ? isSelected
-                            ? 'bg-emerald-400'
-                            : 'bg-emerald-600'
-                          : 'bg-amber-500'
-                      )}
-                    />
-                    <span className="truncate font-mono text-xs font-bold">{item.symbol}</span>
-                  </div>
-                  {!compact && (
-                    <span
-                      className={cn(
-                        'shrink-0 font-mono text-[10px]',
-                        isSelected ? 'text-[#a3a3a3]' : 'text-[#737373]'
-                      )}
-                    >
-                      {item.maxLeverage}x · PERP
-                    </span>
-                  )}
-                </div>
-
-                {!compact && (
-                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                    <Badge tone={paperTradable ? 'success' : 'wait'}>
-                      {paperTradable ? '● İşleme Açık' : '⏸ İşleme Kapalı'}
-                    </Badge>
-                    <Badge tone={analysisReady ? 'accent' : 'neutral'}>
-                      {analysisReady ? 'AI Hazır' : 'AI Veri Bekliyor'}
-                    </Badge>
-                  </div>
-                )}
-
-                {reasonCodes.length > 0 && (
-                  <div
+                {canFavorite && (
+                  <button
+                    type="button"
+                    data-testid={`favorite-star-${item.symbol}`}
+                    aria-label={fav ? 'Favorilerden çıkar' : 'Favorilere ekle'}
+                    aria-pressed={fav}
+                    onClick={() => toggleFavorite(item.symbol)}
                     className={cn(
-                      'mt-1 truncate text-[10px]',
-                      isSelected ? 'text-[#d4d4d4]' : 'text-[#737373]'
+                      'flex shrink-0 items-center justify-center px-2 transition-colors',
+                      isSelected
+                        ? 'text-white/70 hover:text-amber-300'
+                        : 'text-[#a3a3a3] hover:text-amber-500'
                     )}
                   >
-                    {reasonCodes.map((code) => formatReasonCode(code)).join(' · ')}
-                  </div>
+                    <Star
+                      className={cn(
+                        'h-3.5 w-3.5',
+                        fav && 'fill-amber-400 text-amber-400'
+                      )}
+                      aria-hidden="true"
+                    />
+                  </button>
                 )}
-              </button>
+
+                <button
+                  type="button"
+                  onClick={() => onSelectInstrument(item)}
+                  className={cn(
+                    'min-w-0 flex-1 py-2 pr-2.5 text-left',
+                    canFavorite ? 'pl-0.5' : 'pl-2.5'
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        className={cn(
+                          'h-1.5 w-1.5 shrink-0 rounded-full',
+                          paperTradable
+                            ? isSelected
+                              ? 'bg-emerald-400'
+                              : 'bg-emerald-600'
+                            : 'bg-amber-500'
+                        )}
+                      />
+                      <span className="truncate font-mono text-xs font-bold">{item.symbol}</span>
+                    </div>
+                    {!compact && (
+                      <span
+                        className={cn(
+                          'shrink-0 font-mono text-[10px]',
+                          isSelected ? 'text-[#a3a3a3]' : 'text-[#737373]'
+                        )}
+                      >
+                        {item.maxLeverage}x · PERP
+                      </span>
+                    )}
+                  </div>
+
+                  {!compact && (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                      <Badge tone={paperTradable ? 'success' : 'wait'}>
+                        {paperTradable ? '● İşleme Açık' : '⏸ İşleme Kapalı'}
+                      </Badge>
+                      <Badge tone={analysisReady ? 'accent' : 'neutral'}>
+                        {analysisReady ? 'AI Hazır' : 'AI Veri Bekliyor'}
+                      </Badge>
+                    </div>
+                  )}
+
+                  {reasonCodes.length > 0 && (
+                    <div
+                      className={cn(
+                        'mt-1 truncate text-[10px]',
+                        isSelected ? 'text-[#d4d4d4]' : 'text-[#737373]'
+                      )}
+                    >
+                      {reasonCodes.map((code) => formatReasonCode(code)).join(' · ')}
+                    </div>
+                  )}
+                </button>
+              </div>
             );
           })
         )}

@@ -418,4 +418,114 @@ describe('USDT Bazlı SL/TP Hesabı, Tasfiye Sınırı Doğrulaması ve Emir Ak�
     expect(alerts.some((el) => /Minimum işlem adımı/i.test(el.textContent ?? ''))).toBe(true);
     expect(alerts.some((el) => /geçerli bir teminat bütçesi ve kaldıraç girin/i.test(el.textContent ?? ''))).toBe(false);
   });
+
+  it('Pozisyon ~2 USDT zararda likit oluyorken 3 USDT SL girişini engeller, uyarı + max sınırı gösterir ve tek tıkla uygular', async () => {
+    const user = userEvent.setup();
+    setAccessToken(TEST_TOKENS.user);
+    let previewCalled = false;
+
+    const LOW_PRICE_QUOTE: MarketSnapshot = {
+      ...CUSTOM_QUOTE,
+      markPrice: '2.00',
+      lastPrice: '2.00',
+      bid: '1.999',
+      ask: '2.001',
+    };
+
+    server.use(
+      http.get('/api/v1/market/quotes', () => HttpResponse.json(LOW_PRICE_QUOTE)),
+      http.post('/api/v1/sim/order-previews', async ({ request }) => {
+        previewCalled = true;
+        const body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          planId: 'plan-small-liq-1',
+          revision: 1,
+          planHash: 'sha256:plansmallliq1',
+          sessionId: 'sess-1',
+          instrumentId: 'BTCUSDT',
+          instrumentVersion: 1,
+          source: 'MANUAL',
+          proposalId: null,
+          positionGeneration: 1,
+          side: 'LONG',
+          orderType: 'MARKET',
+          quantity: '22',
+          referenceEntry: '2.00',
+          limitPrice: null,
+          marginRequired: '2.20',
+          openFeeEstimate: '0.02',
+          notional: '44.00',
+          leverage: '20',
+          stopLoss: String(body.stopLoss ?? ''),
+          takeProfit: String(body.takeProfit ?? ''),
+          horizonSeconds: 3600,
+          expiryPolicy: 'CLOSE_AT_DEADLINE',
+          priceLowerBound: '1.80',
+          priceUpperBound: '2.20',
+          maxOpenFee: '1',
+          maxSlippageBps: '0',
+          ruleProfileId: '88888888-8888-4888-8888-888888888888',
+          riskPolicyVersion: 1,
+          createdAt: new Date(Date.now() - 1000).toISOString(),
+          validUntil: new Date(Date.now() + 60_000).toISOString(),
+          estimatedLiquidationPrice: '1.9095',
+          warnings: [],
+        });
+      }),
+    );
+
+    renderTradeRoute('/trade/sess-1?instrumentId=BTCUSDT');
+    await screen.findByTestId('mark-price-value');
+
+    const marginInput = screen.getByLabelText(/Teminat Bütçesi/i);
+    await user.clear(marginInput);
+    await user.type(marginInput, '2.2');
+
+    const levInput = screen.getByLabelText(/Kaldıraç/i);
+    await user.clear(levInput);
+    await user.type(levInput, '20');
+
+    await user.click(screen.getByRole('button', { name: /SL giriş modu: USDT/i }));
+    const slInput = screen.getByLabelText(/Zarar Durdur \(SL\)/i);
+    await user.clear(slInput);
+    await user.type(slInput, '3');
+
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts.some((el) => /likid/i.test(el.textContent ?? '') && /en fazla/i.test(el.textContent ?? ''))).toBe(true);
+    const guardBox = await screen.findByTestId('sl-liquidation-guard');
+    expect(guardBox).toHaveTextContent(/Maks\. güvenli SL/i);
+
+    await user.click(await screen.findByRole('button', { name: /Sunucu Emir Önizlemesi Al/i }));
+    expect(previewCalled).toBe(false);
+
+    // Tek tıkla maksimum güvenli sınırı uygula ve tekrar önizleme iste
+    const applyMaxBtn = screen.getByRole('button', { name: /Maks\. Sınırı Uygula/i });
+    await user.click(applyMaxBtn);
+
+    expect(screen.queryByTestId('sl-liquidation-guard')).not.toBeInTheDocument();
+    expect(Number(String((slInput as HTMLInputElement).value).replace(',', '.'))).toBeLessThan(2.0);
+    expect(Number(String((slInput as HTMLInputElement).value).replace(',', '.'))).toBeGreaterThan(1.5);
+
+    await user.click(await screen.findByRole('button', { name: /Sunucu Emir Önizlemesi Al/i }));
+    await waitFor(() => {
+      expect(previewCalled).toBe(true);
+    });
+  });
+
+  it('diagnoseOrderSizing mevcut kullanılabilir bakiyeyi aşan bütçede likidasyon sınırını bakiyeye göre daraltır', () => {
+    const capped = diagnoseOrderSizing({
+      side: 'LONG',
+      entryPrice: 80000,
+      marginBudget: 250,
+      leverage: 20,
+      availableBalance: 2,
+    });
+    expect(capped.ok).toBe(false);
+    if (!capped.ok) {
+      expect(capped.budgetRawLiquidationLossUsd).not.toBeNull();
+      expect(capped.budgetRawLiquidationLossUsd!).toBeLessThan(2);
+      expect(capped.budgetMaxSafeStopLossUsd).not.toBeNull();
+      expect(capped.budgetMaxSafeStopLossUsd!).toBeLessThan(2);
+    }
+  });
 });

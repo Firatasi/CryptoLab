@@ -587,10 +587,57 @@ export function PositionsTable({
                   hasError={Boolean(resolvedModalSl.error)}
                   onChange={setSlInput}
                   suffix={modalSlMode === 'USDT' ? 'USDT' : undefined}
-                  placeholder={modalSlMode === 'USDT' ? 'Örn: 50' : 'Örn: 48500'}
+                  placeholder={
+                    modalSlMode === 'USDT'
+                      ? bracketSizing?.maxSafeStopLossUsd !== null &&
+                        bracketSizing?.maxSafeStopLossUsd !== undefined
+                        ? `Maks: ${formatFixedDecimal(bracketSizing.maxSafeStopLossUsd, 2)}`
+                        : 'Örn: 50'
+                      : 'Örn: 48500'
+                  }
                 />
               )}
             </FieldGroup>
+
+            {resolvedModalSl.error &&
+              /likid|tasfiye/i.test(resolvedModalSl.error) &&
+              bracketSizing?.maxSafeStopLossUsd !== null &&
+              bracketSizing?.maxSafeStopLossUsd !== undefined &&
+              bracketSizing.maxSafeStopLossUsd > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-none border border-[#dc2626] bg-red-50 px-3 py-2 text-xs text-[#dc2626]">
+                  <span className="font-medium">
+                    Maks. güvenli SL:{' '}
+                    {bracketSizing.maxSafeStopLossUsd.toLocaleString('tr-TR', {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}{' '}
+                    USDT
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const maxSafe = bracketSizing.maxSafeStopLossUsd!;
+                      if (modalSlMode === 'USDT') {
+                        setSlInput(formatFixedDecimal(maxSafe, 2));
+                      } else if (bracketTarget) {
+                        const conv = stopLossPriceFromUsd(bracketTarget.side, bracketSizing, maxSafe);
+                        if (conv.price !== null) {
+                          setSlInput(formatFixedDecimal(conv.price, stepDecimals(bracketSizing.tickSize)));
+                        }
+                      }
+                      setModalValidation(null);
+                    }}
+                    className="shrink-0 rounded-none border border-[#dc2626] bg-white px-2 py-1 text-[11px] font-semibold text-[#dc2626] transition-colors hover:bg-[#dc2626] hover:text-white"
+                  >
+                    Maks. Sınırı Uygula (
+                    {bracketSizing.maxSafeStopLossUsd.toLocaleString('tr-TR', {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}{' '}
+                    USDT)
+                  </button>
+                </div>
+              )}
 
             <FieldGroup
               label="Yeni Take-Profit (Boş bırakılırsa kaldırılır)"

@@ -11,6 +11,7 @@ runs publish_gate checks (A09), and persists SHA-256 artifacts + active_bundles.
 from __future__ import annotations
 
 from bisect import bisect_right
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -68,8 +69,8 @@ BINANCE_FAPI_FUNDING = "https://fapi.binance.com/fapi/v1/fundingRate"
 LOCAL_MARKET_DATA_URL = "http://127.0.0.1:8082"
 
 ESTIMATED_ROUND_TRIP_FEE_LOG = 0.0012  # ~12 bps round-trip taker + slippage
-TRIPLE_BARRIER_TP_ATR = 3.0
-TRIPLE_BARRIER_SL_ATR = 1.5
+TRIPLE_BARRIER_TP_ATR = 1.75
+TRIPLE_BARRIER_SL_ATR = 1.85
 TRIPLE_BARRIER_MAX_HOLD_BARS: dict[int, int] = {
     60: 16,
     900: 12,
@@ -79,10 +80,10 @@ TRIPLE_BARRIER_MAX_HOLD_BARS: dict[int, int] = {
 }
 HORIZON_MIN_SL_PCT: dict[int, float] = {
     60: 0.0028,
-    900: 0.0040,
-    3600: 0.0065,
-    86400: 0.0120,
-    604800: 0.0220,
+    900: 0.0050,
+    3600: 0.0080,
+    86400: 0.0140,
+    604800: 0.0240,
 }
 HORIZON_TRAIN_STRIDE: dict[int, int] = {
     60: 3,
@@ -319,13 +320,15 @@ def _simulate_side_barrier(
     min_sl_pct: float = 0.0018,
 ) -> tuple[int, float]:
     """Evaluates Triple-Barrier outcome with pessimistic SL-first intrabar tie-break and 12bps fee."""
-    sl_frac = max(TRIPLE_BARRIER_SL_ATR * atr_pct, min_sl_pct)
-    tp_frac = 2.0 * sl_frac
+    is_short_horizon = min_sl_pct <= 0.0030
+    sl_atr_mult = 1.50 if is_short_horizon else TRIPLE_BARRIER_SL_ATR
+    sl_frac = max(sl_atr_mult * atr_pct, min_sl_pct)
+    tp_frac = (1.85 * sl_frac) if is_short_horizon else (0.95 * sl_frac)
     tp_r = tp_frac / sl_frac
     fee_r = ESTIMATED_ROUND_TRIP_FEE_LOG / sl_frac
 
     if is_long:
-        tp_px = entry * (1.0 + tp_frac + ESTIMATED_ROUND_TRIP_FEE_LOG)
+        tp_px = entry * (1.0 + tp_frac)
         sl_px = entry * (1.0 - sl_frac)
         for bar in future_bars:
             lo = float(bar.low)
@@ -337,7 +340,7 @@ def _simulate_side_barrier(
         last_close = float(future_bars[-1].close)
         net_ret = (last_close - entry) / entry - ESTIMATED_ROUND_TRIP_FEE_LOG
     else:
-        tp_px = entry * (1.0 - tp_frac - ESTIMATED_ROUND_TRIP_FEE_LOG)
+        tp_px = entry * (1.0 - tp_frac)
         sl_px = entry * (1.0 + sl_frac)
         for bar in future_bars:
             hi = float(bar.high)
@@ -350,7 +353,7 @@ def _simulate_side_barrier(
         net_ret = (entry - last_close) / entry - ESTIMATED_ROUND_TRIP_FEE_LOG
 
     r_mult = net_ret / sl_frac
-    win = 1 if net_ret > 0.35 * atr_pct else 0
+    win = 1 if net_ret > 0.0 else 0
     return win, r_mult
 
 
@@ -380,10 +383,11 @@ def _build_horizon_panel_rows(
         prices = {b.close_time: b.close for b in primary}
         dataset_hash = f"offline:{sym}:{p_int}"
 
+        label_horizon_seconds = horizon if horizon <= 60 else int(cfg["primary_seconds"]) * int(cfg["target_bars"])
         limit_idx = len(primary) - max_hold
         for i in range(65, limit_idx, stride):
             as_of = primary[i].close_time
-            lbl = forward_label(prices, as_of, horizon)
+            lbl = forward_label(prices, as_of, label_horizon_seconds)
             if lbl is None:
                 continue
             y_ret, fwd_end = lbl
@@ -718,7 +722,15 @@ def _evaluate_quant_strategy(
 
         conf = float(res["summaryExtras"]["signalConfidence"])
         codes = set(res["reasonCodes"])
-        if conf >= 0.53 and "CHOPPY_REGIME" not in codes and "VOLATILITY_REGIME_UNSAFE" not in codes:
+        htf_ok = True if horizon > 60 else ("HTF_TREND_CONFIRMED" in codes or "TRIPLE_CONFLUENCE_CONFIRMED" in codes)
+        if (
+            conf >= 0.55
+            and htf_ok
+            and "CHOPPY_REGIME" not in codes
+            and "VOLATILITY_REGIME_UNSAFE" not in codes
+            and "MEAN_REVERSION_EXHAUSTION" not in codes
+            and "HTF_COUNTER_TREND" not in codes
+        ):
             pred_sign = 1.0 if pred_ret >= 0.0 else -1.0
             realized = pred_sign * s.y
             gated_returns.append(realized)
@@ -1012,15 +1024,26 @@ def run_training(artifacts_dir: str | Path | None = None) -> dict[str, Any]:
         needed_intervals.add(cfg["context_interval"])
 
     all_symbols = SEEN_SYMBOLS + UNSEEN_SYMBOLS
+    sorted_intervals = sorted(needed_intervals)
     symbol_bars: dict[tuple[str, str], list[Candle]] = {}
     funding_history: dict[str, tuple[list[datetime], list[float]]] = {}
-    with httpx.Client(timeout=15.0) as client:
-        for sym in all_symbols:
-            funding_history[sym] = _fetch_binance_funding(sym, client=client, pages=4)
-            print(f"[fetch] {sym} funding: {len(funding_history[sym][0])} points", flush=True)
-            for interval in sorted(needed_intervals):
+
+    def _fetch_symbol_bundle(sym: str) -> tuple[str, tuple[list[datetime], list[float]], dict[str, list[Candle]]]:
+        sym_bars: dict[str, list[Candle]] = {}
+        with httpx.Client(timeout=15.0) as client:
+            fund = _fetch_binance_funding(sym, client=client, pages=4)
+            for interval in sorted_intervals:
                 target = INTERVAL_FETCH_DEPTHS.get(interval, 1500)
-                bars = load_candles(sym, interval, limit=target, client=client)
+                sym_bars[interval] = load_candles(sym, interval, limit=target, client=client)
+        return sym, fund, sym_bars
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(_fetch_symbol_bundle, sym) for sym in all_symbols]
+        for fut in as_completed(futures):
+            sym, fund, sym_bars = fut.result()
+            funding_history[sym] = fund
+            print(f"[fetch] {sym} funding: {len(fund[0])} points", flush=True)
+            for interval, bars in sym_bars.items():
                 symbol_bars[(sym, interval)] = bars
                 print(f"[fetch] {sym} {interval}: {len(bars)} closed candles", flush=True)
 

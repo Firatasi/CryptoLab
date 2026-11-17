@@ -5,7 +5,7 @@ Reads /api/v1/market/instruments, /api/v1/market/candles, /api/v1/market/quotes.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
@@ -83,12 +83,26 @@ class LiveMarketDatasetReader:
             raise RuntimeError(f"MARKET_CANDLES_HTTP_{resp.status_code}")
 
         payload = resp.json()
+        raw_as_of = payload.get("asOf")
+        payload_as_of = _parse_utc(str(raw_as_of)) if raw_as_of else datetime.now(timezone.utc)
         raw_bars = payload.get("bars", [])
         candles: list[Candle] = []
         for bar in raw_bars:
-            if not bar.get("closed", True):
-                continue
-            close_time = _parse_utc(str(bar["closeTime"]))
+            is_closed = bool(bar.get("closed", True))
+            raw_close_time = _parse_utc(str(bar["closeTime"]))
+            if not is_closed:
+                raw_open_time = bar.get("openTime")
+                if not raw_open_time:
+                    continue
+                open_time = _parse_utc(str(raw_open_time))
+                if open_time > payload_as_of or (payload_as_of - open_time).total_seconds() < 10.0:
+                    continue
+                # Allow up to 5s clock/queue skew between strategy-service request.asOf and /candles payload.asOf
+                # while keeping close_time strictly within [open_time, raw_close_time] for _filter_causal_bars.
+                safe_live_time = max(open_time, payload_as_of - timedelta(seconds=5))
+                close_time = min(raw_close_time, safe_live_time)
+            else:
+                close_time = raw_close_time
             op = _dec(bar["open"])
             hi = _dec(bar["high"])
             lo = _dec(bar["low"])
@@ -158,6 +172,7 @@ class LiveMarketDatasetReader:
                 "horizon": horizon_seconds,
                 "primaryCount": len(primary_bars),
                 "lastCloseTime": primary_bars[-1].close_time.isoformat() if primary_bars else None,
+                "lastClosePrice": str(primary_bars[-1].close) if primary_bars else None,
             },
             sort_keys=True,
         ).encode("utf-8")

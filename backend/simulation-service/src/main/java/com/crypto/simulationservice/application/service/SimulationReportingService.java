@@ -115,7 +115,9 @@ public class SimulationReportingService {
             BigDecimal takeProfit,
             UUID ruleProfileId,
             BigDecimal openFee,
-            BigDecimal settledFunding
+            BigDecimal settledFunding,
+            Instant deadlineAt,
+            String expiryPolicy
     ) {}
 
     private record SessionRow(
@@ -263,6 +265,10 @@ public class SimulationReportingService {
                     candidate.takeProfit(),
                     DEFAULT_MAINTENANCE_TIERS
             );
+            if (candidateAction == RiskDecision.Action.NONE
+                    && shouldTakeProfitAtDeadline(candidate, markPrice, now)) {
+                candidateAction = RiskDecision.Action.TAKE_PROFIT;
+            }
             if (candidateAction == RiskDecision.Action.NONE) {
                 continue;
             }
@@ -289,6 +295,10 @@ public class SimulationReportingService {
                     locked.takeProfit(),
                     DEFAULT_MAINTENANCE_TIERS
             );
+            if (lockedAction == RiskDecision.Action.NONE
+                    && shouldTakeProfitAtDeadline(locked, markPrice, now)) {
+                lockedAction = RiskDecision.Action.TAKE_PROFIT;
+            }
             if (lockedAction == RiskDecision.Action.NONE) {
                 continue;
             }
@@ -353,6 +363,8 @@ public class SimulationReportingService {
                     p.initial_margin_remaining,
                     p.stop_loss,
                     p.take_profit,
+                    p.deadline_at,
+                    p.expiry_policy,
                     s.rule_profile_id,
                     COALESCE((
                         SELECT (ep.canonical_json->>'openFeeEstimate')::numeric
@@ -411,10 +423,45 @@ public class SimulationReportingService {
                         rs.getBigDecimal("take_profit"),
                         rs.getObject("rule_profile_id", UUID.class),
                         rs.getBigDecimal("open_fee"),
-                        rs.getBigDecimal("settled_funding")
+                        rs.getBigDecimal("settled_funding"),
+                        rs.getTimestamp("deadline_at") != null ? rs.getTimestamp("deadline_at").toInstant() : null,
+                        rs.getString("expiry_policy")
                 ),
                 params.toArray()
         );
+    }
+
+    /**
+     * Vade süresi dolmuş ve komisyonlar sonrası net kârda olan CLOSE_AT_DEADLINE pozisyonlarını
+     * otomatik olarak kârla kapatıp kazancı kilitler; zarardaki pozisyonları zorla kapatmaz.
+     */
+    private static boolean shouldTakeProfitAtDeadline(
+            OpenPositionRow pos,
+            BigDecimal markPrice,
+            Instant now
+    ) {
+        if (!"CLOSE_AT_DEADLINE".equals(pos.expiryPolicy())
+                || pos.deadlineAt() == null
+                || now.isBefore(pos.deadlineAt())) {
+            return false;
+        }
+        BigDecimal margin = pos.margin() != null ? pos.margin() : BigDecimal.ZERO;
+        BigDecimal feeRate = SimulationMarketCatalog.resolveTakerFeeRate(pos.ruleProfileId(), "MARKET");
+        Finance.Closing closing = Finance.close(
+                PositionSide.valueOf(pos.side()),
+                pos.q(),
+                pos.q(),
+                pos.entryPrice(),
+                markPrice,
+                margin,
+                feeRate
+        );
+        BigDecimal grossPnl = Decimal.cash(closing.realized());
+        BigDecimal closingFee = Decimal.cash(closing.fee());
+        BigDecimal openFee = pos.openFee() != null ? Decimal.cash(pos.openFee()) : BigDecimal.ZERO;
+        BigDecimal settledFunding = pos.settledFunding() != null ? Decimal.cash(pos.settledFunding()) : BigDecimal.ZERO;
+        BigDecimal netPnl = grossPnl.add(settledFunding).subtract(openFee).subtract(closingFee);
+        return netPnl.compareTo(BigDecimal.ZERO) > 0;
     }
 
     private SettlementOutcome settlePosition(
