@@ -197,6 +197,7 @@ export interface SimulationSession {
   initialDeposit: DecimalString;
   availableBalance?: DecimalString;
   isolatedMargin?: DecimalString;
+  reservedBalance?: DecimalString;
   equity?: DecimalString;
   unrealizedPnl?: DecimalString;
   realizedPnl?: DecimalString;

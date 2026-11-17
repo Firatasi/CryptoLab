@@ -99,8 +99,10 @@ public class SessionController {
     }
 
     @GetMapping("/sessions")
+    @Transactional
     public Map<String, Object> listSessions(@AuthenticationPrincipal Jwt jwt) {
         UUID ownerId = UUID.fromString(jwt.getSubject());
+        liquidationMonitorService.checkAndPublishIfEnabled(ownerId, null);
         return Map.of("items", querySessionMaps(ownerId, null));
     }
 
@@ -247,7 +249,7 @@ public class SessionController {
 
         jdbc.update("""
                 UPDATE orders
-                SET status = 'CANCELLED', version = version + 1, updated_at = ?
+                SET status = 'CANCELLED', reserved_amount = 0, version = version + 1, updated_at = ?
                 WHERE session_id = ? AND status = 'NEW'
                 """, Timestamp.from(now), sessionId);
 
@@ -592,7 +594,7 @@ public class SessionController {
                     horizon_seconds, close_requested, opened_at
                 FROM positions
                 WHERE session_id = ? AND state IN ('OPEN', 'LIQUIDATING')
-                ORDER BY opened_at DESC
+                ORDER BY opened_at DESC, id DESC
                 """,
                 (rs, n) -> mapPositionRow(rs),
                 sessionId
@@ -795,6 +797,7 @@ public class SessionController {
                 FROM orders o
                 JOIN simulation_sessions s ON s.id = o.session_id
                 WHERE o.id = ? AND s.owner_id = ? AND o.status = 'NEW'
+                FOR UPDATE OF o
                 """,
                 (rs, n) -> Map.of(
                         "sessionId", rs.getObject("session_id", UUID.class),
@@ -808,11 +811,15 @@ public class SessionController {
         UUID sessionId = (UUID) rows.getFirst().get("sessionId");
         BigDecimal reserved = (BigDecimal) rows.getFirst().get("reserved");
 
-        jdbc.update("""
+        int updated = jdbc.update("""
                 UPDATE orders
-                SET status = 'CANCELLED', version = version + 1, updated_at = ?
-                WHERE id = ?
+                SET status = 'CANCELLED', reserved_amount = 0, version = version + 1, updated_at = ?
+                WHERE id = ? AND status = 'NEW'
                 """, Timestamp.from(clock.instant()), orderId);
+
+        if (updated == 0) {
+            throw new BusinessException(BusinessException.Code.NOT_FOUND);
+        }
 
         if (reserved != null && reserved.signum() > 0) {
             jdbc.update("""
@@ -850,6 +857,9 @@ public class SessionController {
                 margin,
                 SimulationReportingService.DEFAULT_MAINTENANCE_TIERS
         ).orElse(null);
+        BigDecimal maintMargin = q.signum() > 0 && mark.signum() > 0
+                ? Finance.maintenance(q, mark, SimulationReportingService.DEFAULT_MAINTENANCE_TIERS)
+                : BigDecimal.ZERO;
 
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("positionId", rs.getObject("id", UUID.class).toString());
@@ -863,7 +873,7 @@ public class SessionController {
         m.put("markPrice", Decimal.wire(mark));
         m.put("markAsOf", clock.instant().toString());
         m.put("isolatedMargin", Decimal.wire(margin));
-        m.put("maintenanceMargin", Decimal.wire(notional.multiply(new BigDecimal("0.005"))));
+        m.put("maintenanceMargin", Decimal.wire(maintMargin));
         m.put("unrealizedPnl", Decimal.wire(pnl));
         m.put("estimatedLiquidationPrice", liq != null ? Decimal.wire(liq) : null);
         m.put("leverage", Decimal.wire(leverage));
@@ -948,6 +958,11 @@ public class SessionController {
                         FROM positions p
                         WHERE p.session_id = s.id AND p.state IN ('OPEN', 'LIQUIDATING')
                     ), 0) AS isolated_margin,
+                    COALESCE((
+                        SELECT SUM(o.reserved_amount)
+                        FROM orders o
+                        WHERE o.session_id = s.id AND o.status = 'NEW' AND o.reserved_amount > 0
+                    ), 0) AS reserved_balance,
                     (
                         SELECT h.reason
                         FROM halt_reasons h
@@ -975,9 +990,13 @@ public class SessionController {
                     BigDecimal initialDeposit = rs.getBigDecimal("initial_deposit");
                     BigDecimal available = rs.getBigDecimal("available_balance");
                     BigDecimal isolated = rs.getBigDecimal("isolated_margin");
+                    BigDecimal rawReserved = rs.getBigDecimal("reserved_balance");
+                    BigDecimal reserved = rawReserved != null && rawReserved.signum() > 0 ? rawReserved : BigDecimal.ZERO;
                     BigDecimal unrealized = Decimal.cash(unrealizedBySession.getOrDefault(sid, BigDecimal.ZERO));
-                    BigDecimal realized = Decimal.cash(available.add(isolated).subtract(initialDeposit));
-                    BigDecimal equity = available.add(isolated).add(unrealized);
+                    // Açık LIMIT emirlerinin rezervi (reserved), OrderExecutionService içinde AVAILABLE
+                    // bakiyeden düşüldüğü için available + isolated + reserved toplamı çakışmaz; ayrı kalem olarak döner.
+                    BigDecimal realized = Decimal.cash(available.add(isolated).add(reserved).subtract(initialDeposit));
+                    BigDecimal equity = available.add(isolated).add(reserved).add(unrealized);
                     BigDecimal netPnl = Decimal.cash(equity.subtract(initialDeposit));
                     BigDecimal netPnlPercent = initialDeposit != null && initialDeposit.signum() > 0
                             ? netPnl.multiply(new BigDecimal("100"))
@@ -995,6 +1014,7 @@ public class SessionController {
                     row.put("initialDeposit", Decimal.wire(initialDeposit));
                     row.put("availableBalance", Decimal.wire(available));
                     row.put("isolatedMargin", Decimal.wire(isolated));
+                    row.put("reservedBalance", Decimal.wire(reserved));
                     row.put("equity", Decimal.wire(equity));
                     row.put("unrealizedPnl", Decimal.wire(unrealized));
                     row.put("realizedPnl", Decimal.wire(realized));

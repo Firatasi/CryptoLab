@@ -156,10 +156,6 @@ public class OrderExecutionService {
             }
         }
 
-        if (fillImmediately) {
-            reportingService.closeOpenPositions(sessionId, instrumentId, null, now);
-        }
-
         BigDecimal totalDeduct = marginRequired.add(openFee);
         BigDecimal available = lockAvailableBalance(sessionId);
         if (available == null || available.compareTo(totalDeduct) < 0) {
@@ -414,7 +410,6 @@ public class OrderExecutionService {
         long generation = planOpt.map(p -> p.path("positionGeneration").asLong(1L)).orElse(1L);
 
         Instant now = clock.instant();
-        reportingService.closeOpenPositions(sessionId, instrumentId, null, now);
 
         UUID positionId = openPosition(
                 sessionId, instrumentId, side, q, limitPrice, marginRequired,

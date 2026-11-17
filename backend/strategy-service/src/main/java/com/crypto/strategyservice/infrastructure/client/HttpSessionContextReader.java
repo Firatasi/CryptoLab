@@ -35,8 +35,12 @@ public class HttpSessionContextReader implements SessionContextReader {
 
     private static final Logger log = LoggerFactory.getLogger(HttpSessionContextReader.class);
 
-    // Binance USD-M Futures realistic taker round-trip fee + slippage (~12 bps)
-    private static final double LIVE_ROUND_TRIP_COST = 0.0012;
+    private static final double STANDARD_ROUND_TRIP_COST = 0.0012;
+    private static final double VIP_ROUND_TRIP_COST = 0.00075;
+    private static final double ALT_ROUND_TRIP_COST = 0.00090;
+    private static final UUID STANDARD_RULE_PROFILE_ID = UUID.fromString("88888888-8888-4888-8888-888888888888");
+    private static final UUID VIP_RULE_PROFILE_ID = UUID.fromString("88888888-8888-4888-8888-888888888889");
+    private static final UUID ALT_RULE_PROFILE_ID = UUID.fromString("88888888-8888-4888-8888-888888888890");
 
     private final URI baseUri;
     private final HttpClient httpClient;
@@ -70,6 +74,10 @@ public class HttpSessionContextReader implements SessionContextReader {
                 root.path("riskPolicyId").asText(null),
                 SessionRiskProfile.BALANCED_POLICY_ID
         );
+        UUID ruleProfileId = parseUuidOrDefault(
+                root.path("ruleProfileId").asText(null),
+                STANDARD_RULE_PROFILE_ID
+        );
         cachedProfiles.put(sessionId, new SessionRiskProfile(riskPolicyId, resolveMaxLeverage(riskPolicyId)));
         return Optional.of(new SessionSnapshot(
                 sessionId,
@@ -77,8 +85,18 @@ public class HttpSessionContextReader implements SessionContextReader {
                 instrumentId,
                 generation,
                 status,
-                LIVE_ROUND_TRIP_COST
+                resolveRoundTripCost(ruleProfileId)
         ));
+    }
+
+    public static double resolveRoundTripCost(UUID ruleProfileId) {
+        if (VIP_RULE_PROFILE_ID.equals(ruleProfileId)) {
+            return VIP_ROUND_TRIP_COST;
+        }
+        if (ALT_RULE_PROFILE_ID.equals(ruleProfileId)) {
+            return ALT_ROUND_TRIP_COST;
+        }
+        return STANDARD_ROUND_TRIP_COST;
     }
 
     @Override

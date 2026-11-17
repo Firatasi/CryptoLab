@@ -30,9 +30,11 @@ import {
   formatFixedDecimal,
   parseFiniteDecimal,
   pnlUsdFromTriggerPrice,
+  signedPnlUsdAtTriggerPrice,
   stepDecimals,
   stopLossPriceFromUsd,
   takeProfitPriceFromUsd,
+  validateBracketPriceDirection,
   validateStopLossPriceAgainstLiquidation,
 } from './orderBracketMath';
 
@@ -152,39 +154,98 @@ export function PositionsTable({
     });
   }, [bracketTarget]);
 
+  const bracketMarketReference = useMemo(() => {
+    if (!bracketTarget) return null;
+    return (
+      parseFiniteDecimal(bracketTarget.markPrice) ??
+      parseFiniteDecimal(bracketTarget.entryPrice)
+    );
+  }, [bracketTarget]);
+
   const resolvedModalSl = useMemo(() => {
     if (!bracketTarget || !slInput.trim()) {
-      return { priceStr: null as string | null, usdEstimate: null as number | null, error: null as string | null };
+      return {
+        priceStr: null as string | null,
+        usdEstimate: null as number | null,
+        signedPnlUsd: null as number | null,
+        error: null as string | null,
+      };
     }
     if (modalSlMode === 'USDT') {
       const parsedUsd = parsePositiveDecimalInput(slInput, 2);
       if (!parsedUsd.valid) {
-        return { priceStr: null, usdEstimate: null, error: `Zarar tutarı: ${parsedUsd.message}` };
+        return {
+          priceStr: null,
+          usdEstimate: null,
+          signedPnlUsd: null,
+          error: `Zarar tutarı: ${parsedUsd.message}`,
+        };
       }
       if (!bracketSizing) {
-        return { priceStr: null, usdEstimate: null, error: 'Pozisyon büyüklüğü hesaplanamadı.' };
+        return {
+          priceStr: null,
+          usdEstimate: null,
+          signedPnlUsd: null,
+          error: 'Pozisyon büyüklüğü hesaplanamadı.',
+        };
       }
       const conv = stopLossPriceFromUsd(bracketTarget.side, bracketSizing, Number(parsedUsd.normalized));
       if (conv.error || conv.price === null) {
-        return { priceStr: null, usdEstimate: Number(parsedUsd.normalized), error: conv.error };
+        return {
+          priceStr: null,
+          usdEstimate: Number(parsedUsd.normalized),
+          signedPnlUsd: -Number(parsedUsd.normalized),
+          error: conv.error,
+        };
+      }
+      const dirErr = validateBracketPriceDirection({
+        side: bracketTarget.side,
+        kind: 'SL',
+        referencePrice: bracketMarketReference,
+        triggerPrice: conv.price,
+      });
+      if (dirErr) {
+        return {
+          priceStr: null,
+          usdEstimate: Number(parsedUsd.normalized),
+          signedPnlUsd: -Number(parsedUsd.normalized),
+          error: dirErr,
+        };
       }
       return {
         priceStr: formatFixedDecimal(conv.price, stepDecimals(bracketSizing.tickSize)),
         usdEstimate: Number(parsedUsd.normalized),
+        signedPnlUsd: -Number(parsedUsd.normalized),
         error: null,
       };
     }
     const parsedPrice = parsePositiveDecimalInput(slInput, 8);
     if (!parsedPrice.valid) {
-      return { priceStr: null, usdEstimate: null, error: `Stop-Loss: ${parsedPrice.message}` };
+      return {
+        priceStr: null,
+        usdEstimate: null,
+        signedPnlUsd: null,
+        error: `Stop-Loss: ${parsedPrice.message}`,
+      };
     }
     const numPrice = Number(parsedPrice.normalized);
+    const dirErr = validateBracketPriceDirection({
+      side: bracketTarget.side,
+      kind: 'SL',
+      referencePrice: bracketMarketReference,
+      triggerPrice: numPrice,
+    });
+    const liqErr = dirErr ?? validateStopLossPriceAgainstLiquidation(bracketTarget.side, bracketSizing, numPrice);
+    const signedPnl = bracketSizing
+      ? signedPnlUsdAtTriggerPrice(bracketTarget.side, bracketSizing.entryPrice, bracketSizing.quantity, numPrice)
+      : null;
     return {
       priceStr: parsedPrice.normalized,
       usdEstimate: bracketSizing ? pnlUsdFromTriggerPrice(bracketTarget.side, bracketSizing, numPrice, 'SL') : null,
-      error: validateStopLossPriceAgainstLiquidation(bracketTarget.side, bracketSizing, numPrice),
+      signedPnlUsd: signedPnl,
+      error: liqErr,
     };
-  }, [bracketSizing, bracketTarget, modalSlMode, slInput]);
+  }, [bracketMarketReference, bracketSizing, bracketTarget, modalSlMode, slInput]);
 
   const resolvedModalTp = useMemo(() => {
     if (!bracketTarget || !tpInput.trim()) {
@@ -202,6 +263,15 @@ export function PositionsTable({
       if (conv.error || conv.price === null) {
         return { priceStr: null, usdEstimate: Number(parsedUsd.normalized), error: conv.error };
       }
+      const dirErr = validateBracketPriceDirection({
+        side: bracketTarget.side,
+        kind: 'TP',
+        referencePrice: bracketMarketReference,
+        triggerPrice: conv.price,
+      });
+      if (dirErr) {
+        return { priceStr: null, usdEstimate: Number(parsedUsd.normalized), error: dirErr };
+      }
       return {
         priceStr: formatFixedDecimal(conv.price, stepDecimals(bracketSizing.tickSize)),
         usdEstimate: Number(parsedUsd.normalized),
@@ -212,23 +282,33 @@ export function PositionsTable({
     if (!parsedPrice.valid) {
       return { priceStr: null, usdEstimate: null, error: `Take-Profit: ${parsedPrice.message}` };
     }
+    const numPrice = Number(parsedPrice.normalized);
+    const dirErr = validateBracketPriceDirection({
+      side: bracketTarget.side,
+      kind: 'TP',
+      referencePrice: bracketMarketReference,
+      triggerPrice: numPrice,
+    });
     return {
       priceStr: parsedPrice.normalized,
       usdEstimate: bracketSizing
-        ? pnlUsdFromTriggerPrice(bracketTarget.side, bracketSizing, Number(parsedPrice.normalized), 'TP')
+        ? pnlUsdFromTriggerPrice(bracketTarget.side, bracketSizing, numPrice, 'TP')
         : null,
-      error: null,
+      error: dirErr,
     };
-  }, [bracketSizing, bracketTarget, modalTpMode, tpInput]);
+  }, [bracketMarketReference, bracketSizing, bracketTarget, modalTpMode, tpInput]);
 
   const switchModalSlMode = (nextMode: BracketInputMode) => {
     if (nextMode === modalSlMode) return;
-    if (bracketTarget && slInput.trim() && bracketSizing) {
-      if (nextMode === 'USDT' && resolvedModalSl.priceStr) {
-        const usd = pnlUsdFromTriggerPrice(bracketTarget.side, bracketSizing, Number(resolvedModalSl.priceStr), 'SL');
-        if (usd !== null) setSlInput(formatFixedDecimal(usd, 2));
-      } else if (nextMode === 'PRICE' && resolvedModalSl.priceStr) {
-        setSlInput(resolvedModalSl.priceStr);
+    if (bracketTarget && slInput.trim()) {
+      if (nextMode === 'USDT') {
+        const usd =
+          bracketSizing && resolvedModalSl.priceStr
+            ? pnlUsdFromTriggerPrice(bracketTarget.side, bracketSizing, Number(resolvedModalSl.priceStr), 'SL')
+            : null;
+        setSlInput(usd !== null ? formatFixedDecimal(usd, 2) : '');
+      } else {
+        setSlInput(resolvedModalSl.priceStr ?? '');
       }
     }
     setModalSlMode(nextMode);
@@ -237,12 +317,15 @@ export function PositionsTable({
 
   const switchModalTpMode = (nextMode: BracketInputMode) => {
     if (nextMode === modalTpMode) return;
-    if (bracketTarget && tpInput.trim() && bracketSizing) {
-      if (nextMode === 'USDT' && resolvedModalTp.priceStr) {
-        const usd = pnlUsdFromTriggerPrice(bracketTarget.side, bracketSizing, Number(resolvedModalTp.priceStr), 'TP');
-        if (usd !== null) setTpInput(formatFixedDecimal(usd, 2));
-      } else if (nextMode === 'PRICE' && resolvedModalTp.priceStr) {
-        setTpInput(resolvedModalTp.priceStr);
+    if (bracketTarget && tpInput.trim()) {
+      if (nextMode === 'USDT') {
+        const usd =
+          bracketSizing && resolvedModalTp.priceStr
+            ? pnlUsdFromTriggerPrice(bracketTarget.side, bracketSizing, Number(resolvedModalTp.priceStr), 'TP')
+            : null;
+        setTpInput(usd !== null ? formatFixedDecimal(usd, 2) : '');
+      } else {
+        setTpInput(resolvedModalTp.priceStr ?? '');
       }
     }
     setModalTpMode(nextMode);
@@ -431,7 +514,7 @@ export function PositionsTable({
       <Modal
         open={Boolean(closingTarget)}
         onClose={() => setClosingTarget(null)}
-        title={`Pozisyon Kapat · ${closingTarget?.symbol ?? ''}`}
+        title={`Pozisyon Kapat · ${closingTarget?.symbol ?? ''} ${closingTarget ? `(${closingTarget.side})` : ''}`}
         description="Güncel pozisyon sürümü doğrulanarak kapatılır. İşlem onaylanana kadar pozisyon tabloda görüntülenmeye devam eder."
         footer={
           <>
@@ -460,6 +543,10 @@ export function PositionsTable({
             )}
 
             <div className="rounded-none border border-[#e5e5e5] bg-[#f5f5f5] p-3 font-mono text-xs text-[#0a0a0a] space-y-1">
+              <div className="flex items-center gap-2 font-sans">
+                <SideBadge side={closingTarget.side} />
+                <span className="font-mono text-[#525252]">{closingTarget.leverage}x</span>
+              </div>
               <div>Mevcut Miktar: {closingTarget.quantity}</div>
               <div>Giriş Fiyatı: {formatPrice(closingTarget.entryPrice)}</div>
             </div>
@@ -507,7 +594,7 @@ export function PositionsTable({
       <Modal
         open={Boolean(bracketTarget)}
         onClose={() => setBracketTarget(null)}
-        title={`SL / TP Bracket Düzenle · ${bracketTarget?.symbol ?? ''}`}
+        title={`SL / TP Bracket Düzenle · ${bracketTarget?.symbol ?? ''} ${bracketTarget ? `(${bracketTarget.side})` : ''}`}
         description="Güncel pozisyon sürümü doğrulanarak zarar durdur ve kâr al seviyeleri güncellenir."
         footer={
           <>
@@ -535,6 +622,15 @@ export function PositionsTable({
               </div>
             )}
 
+            <div className="rounded-none border border-[#e5e5e5] bg-[#f5f5f5] p-3 font-mono text-xs text-[#0a0a0a] space-y-1">
+              <div className="flex items-center gap-2 font-sans">
+                <SideBadge side={bracketTarget.side} />
+                <span className="font-mono text-[#525252]">{bracketTarget.leverage}x</span>
+              </div>
+              <div>Mevcut Miktar: {bracketTarget.quantity}</div>
+              <div>Giriş Fiyatı: {formatPrice(bracketTarget.entryPrice)}</div>
+            </div>
+
             <FieldGroup
               label="Yeni Stop-Loss (Boş bırakılırsa kaldırılır)"
               error={resolvedModalSl.error}
@@ -552,7 +648,9 @@ export function PositionsTable({
                         : 'Zarar durdur tutarı (USDT)'
                     : resolvedModalSl.usdEstimate !== null
                       ? `Tahmini zarar: ~-${resolvedModalSl.usdEstimate.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`
-                      : undefined
+                      : resolvedModalSl.signedPnlUsd !== null && resolvedModalSl.signedPnlUsd >= 0
+                        ? `Tahmini kâr kilidi: ~+${resolvedModalSl.signedPnlUsd.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`
+                        : undefined
                   : undefined
               }
               rightAddon={

@@ -301,6 +301,11 @@ export function SessionsPage() {
                       <div className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-[#0a0a0a]">
                         {formatMoney(session.isolatedMargin ?? '0', session.currency)}
                       </div>
+                      {decimalSign(session.reservedBalance) === 1 && (
+                        <div className="mt-0.5 font-mono text-[11px] tabular-nums text-[#737373]">
+                          Emir Rezervi: {formatMoney(session.reservedBalance, session.currency)}
+                        </div>
+                      )}
                     </div>
                     <div>
                       <div className="text-[11px] text-[#737373]">Güncel Varlık</div>

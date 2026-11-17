@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
@@ -426,5 +426,209 @@ describe('AI Analiz -> Emir Terminali Enstrüman ve Grafik Aktarımı', () => {
 
     renderAt(['/trade/sess-1?instrumentId=BTCUSDT']);
     expect(await screen.findByText(/Son Mum:.*03:45:00 TSİ/i)).toBeInTheDocument();
+  });
+
+  it('WAIT analiz kararında hem WAIT bekleme butonunu hem de aktarılabilir aday AI Emir Önerisini gösterir ve Emir Terminaline taşır', async () => {
+    const user = userEvent.setup();
+    setAccessToken(TEST_TOKENS.user);
+
+    server.use(
+      http.post('/api/v1/strategy/analyses', () =>
+        HttpResponse.json(
+          { analysisId: 'anl-wait-override-1', status: 'QUEUED', statusUrl: '/api/v1/strategy/analyses/anl-wait-override-1' },
+          { status: 202 },
+        ),
+      ),
+      http.get('/api/v1/strategy/analyses/anl-wait-override-1', () =>
+        HttpResponse.json({
+          id: 'anl-wait-override-1',
+          ownerId: 'usr-trader-1',
+          sessionId: 'sess-1',
+          instrumentId: '11111111-1111-4111-8111-111111111111',
+          horizonSeconds: 900,
+          asOf: '2026-11-13T00:00:00Z',
+          status: 'SUCCEEDED',
+          action: 'WAIT',
+          error: null,
+          reasonCodes: ['CHOPPY_MARKET_WAIT'],
+          modelBundleId: 'mdl-bundle-v1',
+          bundleReleaseStatus: 'ACTIVE',
+          featureSnapshotId: 'feat-wait',
+          proposalId: null,
+          explanationStatus: 'NOT_APPLICABLE',
+          explanation:
+            'Piyasa Gözlemi (15 Dakika) | Rejim: Yatay / Kararsız Piyasa | Kısa Vadeli Yön Eğilimi: Hafif Düşüş (SHORT) Eğilimi | Oynaklık (ATR): %0.55 | RSI(14): 44.0 | Sinyal Güveni: %51. Referans Fiyat: 64250.00 | ATR: 350.00 | Önerilen Kaldıraç: 4x | İzleme Referans Bandı -> SL: 65160.00 / TP: 63980.00. Piyasa yatay seyrettiği için seçili risk seviyesinde güvenli giriş eşiği oluşmadı.',
+          createdAt: '2026-11-13T00:00:00Z',
+          updatedAt: '2026-11-13T00:00:01Z',
+        } satisfies AnalysisView),
+      ),
+    );
+
+    const { router } = renderAt(['/analysis/sess-1']);
+
+    await user.click(await screen.findByRole('button', { name: /AI Analizi Başlat/i }));
+
+    expect(await screen.findByTestId('analysis-wait-card')).toBeInTheDocument();
+    const waitHoldBtn = await screen.findByTestId('wait-hold-btn');
+    const suggestionCard = screen.getByTestId('ai-proposal-suggestion-card');
+    expect(suggestionCard).toBeInTheDocument();
+    expect(screen.getByTestId('analysis-wait-card')).toHaveClass('bg-[#f5f5f5]');
+    expect(screen.getByTestId('signal-confidence-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('signal-confidence-value')).toHaveTextContent('%51');
+    expect(within(suggestionCard).getByText(/SHORT · MARKET/i)).toBeInTheDocument();
+    expect(within(suggestionCard).getByText(/^4x$/i)).toBeInTheDocument();
+
+    // Kullanıcı önce WAIT bekleme butonuna basabilir (kendi kararı)
+    await user.click(waitHoldBtn);
+    expect(await screen.findByTestId('wait-held-notice')).toBeInTheDocument();
+
+    // İsterse hemen altındaki aday emir önerisini Emir Terminaline aktarabilir
+    await user.click(screen.getByTestId('transfer-proposal-btn'));
+
+    expect(await screen.findByText(/AI Analiz Önerisi Yüklendi/i)).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe('/trade/sess-1');
+    expect(router.state.location.search).toContain('instrumentId=BTCUSDT');
+  });
+
+  it('LONG kutusunu yeşil, SHORT kutusunu kırmızı tonlarda ve Sinyal Güveni barını net gösterir', async () => {
+    const user = userEvent.setup();
+    setAccessToken(TEST_TOKENS.user);
+
+    server.use(
+      http.post('/api/v1/strategy/analyses', () =>
+        HttpResponse.json(
+          { analysisId: 'anl-long-ui-1', status: 'QUEUED', statusUrl: '/api/v1/strategy/analyses/anl-long-ui-1' },
+          { status: 202 },
+        ),
+      ),
+      http.get('/api/v1/strategy/analyses/anl-long-ui-1', () =>
+        HttpResponse.json({
+          id: 'anl-long-ui-1',
+          ownerId: 'usr-trader-1',
+          sessionId: 'sess-1',
+          instrumentId: '11111111-1111-4111-8111-111111111111',
+          horizonSeconds: 3600,
+          asOf: '2026-11-13T00:00:00Z',
+          status: 'SUCCEEDED',
+          action: 'LONG',
+          error: null,
+          reasonCodes: ['TRIPLE_CONFLUENCE_CONFIRMED'],
+          modelBundleId: 'mdl-bundle-v1',
+          bundleReleaseStatus: 'ACTIVE',
+          featureSnapshotId: 'feat-long-ui',
+          proposalId: 'prop-long-ui-1',
+          explanationStatus: 'READY',
+          explanation:
+            'LONG kararı verildi. Rejim: Yükseliş Trendi | Sinyal Güveni: %74 | Kalibre Yön Olasılığı: ~%61.5.',
+          createdAt: '2026-11-13T00:00:00Z',
+          updatedAt: '2026-11-13T00:00:01Z',
+        } satisfies AnalysisView),
+      ),
+      http.get('/api/v1/strategy/proposals/prop-long-ui-1', () =>
+        HttpResponse.json({
+          proposalId: 'prop-long-ui-1',
+          revision: 1,
+          ownerId: 'usr-trader-1',
+          sessionId: 'sess-1',
+          instrumentId: '11111111-1111-4111-8111-111111111111',
+          generation: 1,
+          policyVersion: 'quant-adaptive-v2',
+          modelBundleId: 'mdl-bundle-v1',
+          featureSnapshotId: 'feat-long-ui',
+          intent: {
+            side: 'LONG',
+            orderType: 'MARKET',
+            limitPrice: null,
+            stopLoss: '87000.00',
+            takeProfit: '90500.00',
+            suggestedLeverage: '6',
+            horizonSeconds: 3600,
+            expiryPolicy: 'CLOSE_AT_DEADLINE',
+            referencePrice: '88500.00',
+            verifiedAtr: '1280.00',
+          },
+          validUntil: '2099-01-01T00:00:00Z',
+          state: 'READY',
+        } satisfies ProposalView),
+      ),
+    );
+
+    renderAt(['/analysis/sess-1']);
+
+    await user.click(await screen.findByRole('button', { name: /AI Analizi Başlat/i }));
+
+    const directionalCard = await screen.findByTestId('analysis-directional-card');
+    expect(directionalCard).toHaveClass('bg-emerald-50');
+    expect(within(directionalCard).getByTestId('signal-confidence-value')).toHaveTextContent('%74');
+    expect(within(directionalCard).getByText(/Güçlü/)).toBeInTheDocument();
+    expect(screen.getByTestId('ai-proposal-suggestion-card')).toHaveClass('border-emerald-600');
+
+    server.use(
+      http.post('/api/v1/strategy/analyses', () =>
+        HttpResponse.json(
+          { analysisId: 'anl-short-ui-1', status: 'QUEUED', statusUrl: '/api/v1/strategy/analyses/anl-short-ui-1' },
+          { status: 202 },
+        ),
+      ),
+      http.get('/api/v1/strategy/analyses/anl-short-ui-1', () =>
+        HttpResponse.json({
+          id: 'anl-short-ui-1',
+          ownerId: 'usr-trader-1',
+          sessionId: 'sess-1',
+          instrumentId: '11111111-1111-4111-8111-111111111111',
+          horizonSeconds: 3600,
+          asOf: '2026-11-13T00:00:00Z',
+          status: 'SUCCEEDED',
+          action: 'SHORT',
+          error: null,
+          reasonCodes: ['QUANT_MODEL_V4'],
+          modelBundleId: 'mdl-bundle-v1',
+          bundleReleaseStatus: 'ACTIVE',
+          featureSnapshotId: 'feat-short-ui',
+          proposalId: 'prop-short-ui-1',
+          explanationStatus: 'TEMPLATE',
+          explanation:
+            'TEMPLATE[action=SHORT;policy=NUMERIC_POLICY;reasons=QUANT_MODEL_V4;features=signalConfidence=0.56]',
+          createdAt: '2026-11-13T00:00:00Z',
+          updatedAt: '2026-11-13T00:00:01Z',
+        } satisfies AnalysisView),
+      ),
+      http.get('/api/v1/strategy/proposals/prop-short-ui-1', () =>
+        HttpResponse.json({
+          proposalId: 'prop-short-ui-1',
+          revision: 1,
+          ownerId: 'usr-trader-1',
+          sessionId: 'sess-1',
+          instrumentId: '11111111-1111-4111-8111-111111111111',
+          generation: 1,
+          policyVersion: 'quant-adaptive-v2',
+          modelBundleId: 'mdl-bundle-v1',
+          featureSnapshotId: 'feat-short-ui',
+          intent: {
+            side: 'SHORT',
+            orderType: 'MARKET',
+            limitPrice: null,
+            stopLoss: '90000.00',
+            takeProfit: '86500.00',
+            suggestedLeverage: '5',
+            horizonSeconds: 3600,
+            expiryPolicy: 'CLOSE_AT_DEADLINE',
+            referencePrice: '88500.00',
+            verifiedAtr: '1280.00',
+          },
+          validUntil: '2099-01-01T00:00:00Z',
+          state: 'READY',
+        } satisfies ProposalView),
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: /AI Analizi Başlat/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId('analysis-directional-card')).toHaveClass('bg-rose-50');
+    });
+    const shortCard = screen.getByTestId('analysis-directional-card');
+    expect(within(shortCard).getByTestId('signal-confidence-value')).toHaveTextContent('%56');
+    expect(within(shortCard).getByText(/Orta/)).toBeInTheDocument();
+    expect(screen.getByTestId('ai-proposal-suggestion-card')).toHaveClass('border-rose-600');
   });
 });

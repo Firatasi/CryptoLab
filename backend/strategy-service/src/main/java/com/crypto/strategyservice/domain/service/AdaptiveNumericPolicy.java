@@ -89,13 +89,15 @@ public final class AdaptiveNumericPolicy {
             return new NumericPolicy.Outcome("WAIT", null, null, null, "LOW_MODEL_CONFIDENCE");
         }
         if (reasons.contains("MEAN_REVERSION_EXHAUSTION")
-                && (!"HIGH".equals(riskLevel) || signalConfidence < 0.58)) {
+                && (isV4 ? (!"HIGH".equals(riskLevel) || signalConfidence < 0.72 || !reasons.contains("ORDER_FLOW_CONFIRMED"))
+                         : (!"HIGH".equals(riskLevel) || signalConfidence < 0.58))) {
             return new NumericPolicy.Outcome("WAIT", null, null, null, "EXHAUSTION_REVERSAL_RISK");
         }
         if (reasons.contains("HTF_COUNTER_TREND") && reasons.contains("ORDER_FLOW_DIVERGENCE")) {
             return new NumericPolicy.Outcome("WAIT", null, null, null, "COUNTER_TREND_FLOW_CONFLICT");
         }
-        if (isV4 && reasons.contains("HTF_COUNTER_TREND") && !reasons.contains("ORDER_FLOW_CONFIRMED")) {
+        if (isV4 && reasons.contains("HTF_COUNTER_TREND")
+                && !(reasons.contains("TRIPLE_CONFLUENCE_CONFIRMED") && signalConfidence >= 0.66)) {
             return new NumericPolicy.Outcome("WAIT", null, null, null, "HTF_COUNTER_TREND_WAIT");
         }
         if (reasons.contains("HTF_COUNTER_TREND") && !"HIGH".equals(riskLevel) && signalConfidence < 0.65) {
@@ -104,9 +106,9 @@ public final class AdaptiveNumericPolicy {
 
         double minConfidence = isV4
                 ? switch (riskLevel) {
-                    case "LOW" -> 0.58;
-                    case "HIGH" -> 0.50;
-                    default -> 0.54;
+                    case "LOW" -> 0.64;
+                    case "HIGH" -> 0.56;
+                    default -> 0.60;
                 }
                 : switch (riskLevel) {
                     case "LOW" -> 0.58;
@@ -116,6 +118,12 @@ public final class AdaptiveNumericPolicy {
         if (signalConfidence < minConfidence) {
             return new NumericPolicy.Outcome("WAIT", null, null, null, "CONFIDENCE_BELOW_RISK_THRESHOLD");
         }
+        if (isV4 && summary.containsKey("barrierEvR")) {
+            double barrierEvR = extractDouble(summary, "barrierEvR", 0.0);
+            if (barrierEvR < 0.02) {
+                return new NumericPolicy.Outcome("WAIT", null, null, null, "NEGATIVE_NET_EXPECTANCY");
+            }
+        }
 
         double predLogRet = prediction.predictedLogReturn();
         double absExpectedReturn = Math.abs(Math.expm1(predLogRet));
@@ -123,9 +131,9 @@ public final class AdaptiveNumericPolicy {
         int h = prediction.horizonSeconds();
         double minMove = isV4
                 ? switch (riskLevel) {
-                    case "LOW" -> Math.max(cost * 2.10, h <= 60 ? 0.0012 : 0.0018);
-                    case "HIGH" -> Math.max(cost * 1.25, h <= 60 ? 0.0012 : 0.0016);
-                    default -> Math.max(cost * 1.65, h <= 60 ? 0.0012 : 0.0016);
+                    case "LOW" -> Math.max(cost * 3.20, h <= 60 ? 0.0028 : (h <= 900 ? 0.0038 : 0.0050));
+                    case "HIGH" -> Math.max(cost * 2.10, h <= 60 ? 0.0018 : (h <= 900 ? 0.0024 : 0.0032));
+                    default -> Math.max(cost * 2.60, h <= 60 ? 0.0022 : (h <= 900 ? 0.0030 : 0.0040));
                 }
                 : switch (riskLevel) {
                     case "LOW" -> Math.max(cost * 2.10, h <= 60 ? 0.0009 : (h <= 900 ? 0.0014 : 0.0018));
@@ -138,17 +146,66 @@ public final class AdaptiveNumericPolicy {
 
         boolean isLong = predLogRet > 0.0;
         String action = isLong ? "LONG" : "SHORT";
+        CandidateBracket bracket = computeCandidateBracket(
+                prediction,
+                isLong,
+                entryPrice,
+                verifiedAtr,
+                riskLevel,
+                sessionMaxLeverage,
+                instrumentMaxLeverage,
+                cost
+        );
+
+        return new NumericPolicy.Outcome(
+                action,
+                bracket.stopLoss(),
+                bracket.takeProfit(),
+                bracket.suggestedLeverage(),
+                "QUANT_ADAPTIVE_POLICY"
+        );
+    }
+
+    private record CandidateBracket(
+            BigDecimal stopLoss,
+            BigDecimal takeProfit,
+            BigDecimal suggestedLeverage
+    ) {
+    }
+
+    private static CandidateBracket computeCandidateBracket(
+            PredictionResult prediction,
+            boolean isLong,
+            BigDecimal entryPrice,
+            BigDecimal verifiedAtr,
+            String riskLevel,
+            int sessionMaxLeverage,
+            int instrumentMaxLeverage,
+            double estimatedRoundTripCost
+    ) {
+        Map<String, Object> summary = prediction.observedFeatureSummary() != null
+                ? prediction.observedFeatureSummary()
+                : Map.of();
+        List<String> reasons = prediction.reasonCodes() != null ? prediction.reasonCodes() : List.of();
+        double signalConfidence = extractDouble(summary, "signalConfidence", 0.55);
+        double efficiencyRatio = extractDouble(summary, "efficiencyRatio", 0.25);
+        double volRegimeRatio = extractDouble(summary, "volRegimeRatio", 1.0);
+        boolean isV4 = reasons.contains("QUANT_MODEL_V4");
+        int h = prediction.horizonSeconds();
+        double cost = Math.max(0.0, estimatedRoundTripCost);
 
         double entryD = entryPrice.doubleValue();
         double atrFrac = clamp(verifiedAtr.doubleValue() / entryD, 0.0012, 0.12);
-        double modelVol = Math.max(0.0, prediction.volatilityEstimate());
+        double modelVol = prediction.volatilityEstimate() != null
+                ? Math.max(0.0, prediction.volatilityEstimate())
+                : atrFrac;
         double effVolFrac = Math.max(atrFrac, Math.min(modelVol * 0.65, 0.10));
 
         double horizonMinSlPct = isV4
-                ? (h <= 60 ? 0.0048
-                : (h <= 900 ? 0.0068
-                : (h <= 3600 ? 0.0095
-                : (h <= 86400 ? 0.0140 : 0.0240))))
+                ? (h <= 60 ? 0.0032
+                : (h <= 900 ? 0.0048
+                : (h <= 3600 ? 0.0072
+                : (h <= 86400 ? 0.0125 : 0.0220))))
                 : (h <= 60 ? 0.0032
                 : (h <= 900 ? 0.0050
                 : (h <= 3600 ? 0.0080
@@ -156,9 +213,9 @@ public final class AdaptiveNumericPolicy {
 
         double slMult = isV4
                 ? switch (riskLevel) {
-                    case "LOW" -> 2.40;
-                    case "HIGH" -> 2.80;
-                    default -> 2.60;
+                    case "LOW" -> 1.55;
+                    case "HIGH" -> 1.85;
+                    default -> 1.70;
                 }
                 : switch (riskLevel) {
                     case "LOW" -> 2.00;
@@ -172,31 +229,44 @@ public final class AdaptiveNumericPolicy {
 
         double tpDistPct;
         if (isV4) {
+            // Pozitif beklenti: komisyon maliyetini rahatca asan minimum TP + TP > SL (R:R >= 1.45..2.25)
             double minNetTp = Math.max(
-                    cost * 1.45,
-                    h <= 60 ? 0.0014 : (h <= 900 ? 0.0018 : (h <= 3600 ? 0.0024 : 0.0036))
+                    cost * 3.80,
+                    h <= 60 ? 0.0042 : (h <= 900 ? 0.0056 : (h <= 3600 ? 0.0090 : (h <= 86400 ? 0.0170 : 0.0320)))
             );
-            double atrTpMult = h <= 60 ? 0.90 : (h <= 900 ? 0.75 : (h <= 3600 ? 0.65 : 0.55));
-            double rawTpDistPct = Math.max(minNetTp, effVolFrac * atrTpMult);
-            double tpCapPct = Math.max(minNetTp, stopDistPct * 0.42);
-            tpDistPct = clamp(Math.min(rawTpDistPct, tpCapPct), minNetTp, 0.18);
-        } else {
             double baseRr = switch (riskLevel) {
-                case "LOW" -> 0.68;
-                case "HIGH" -> 0.85;
-                default -> 0.76;
+                case "LOW" -> 1.65;
+                case "HIGH" -> 1.80;
+                default -> 1.70;
             };
-            double rrBoost = 0.16 * clamp((signalConfidence - 0.50) / 0.40, 0.0, 1.0)
-                    + 0.10 * clamp(efficiencyRatio, 0.0, 1.0);
+            double rrBoost = 0.22 * clamp((signalConfidence - 0.56) / 0.34, 0.0, 1.0)
+                    + 0.14 * clamp(efficiencyRatio, 0.0, 1.0);
             if (reasons.contains("TRIPLE_CONFLUENCE_CONFIRMED") || reasons.contains("HTF_TREND_CONFIRMED")) {
-                rrBoost += 0.10;
+                rrBoost += 0.15;
             }
             if (reasons.contains("MEAN_REVERSION_EXHAUSTION")) {
                 rrBoost -= 0.15;
             }
-            double rrRatio = clamp(baseRr + rrBoost, 0.65, 1.05);
-            double minProfitableTp = Math.max(stopDistPct * 0.65, cost * 2.80);
-            tpDistPct = clamp(Math.max(stopDistPct * rrRatio, minProfitableTp), minProfitableTp, 0.18);
+            double rrRatio = clamp(baseRr + rrBoost, 1.45, 2.25);
+            double targetByRr = stopDistPct * rrRatio;
+            tpDistPct = clamp(Math.max(targetByRr, minNetTp), minNetTp, 0.22);
+        } else {
+            double baseRr = switch (riskLevel) {
+                case "LOW" -> 1.35;
+                case "HIGH" -> 1.55;
+                default -> 1.45;
+            };
+            double rrBoost = 0.18 * clamp((signalConfidence - 0.50) / 0.40, 0.0, 1.0)
+                    + 0.12 * clamp(efficiencyRatio, 0.0, 1.0);
+            if (reasons.contains("TRIPLE_CONFLUENCE_CONFIRMED") || reasons.contains("HTF_TREND_CONFIRMED")) {
+                rrBoost += 0.12;
+            }
+            if (reasons.contains("MEAN_REVERSION_EXHAUSTION")) {
+                rrBoost -= 0.15;
+            }
+            double rrRatio = clamp(baseRr + rrBoost, 1.25, 1.95);
+            double minProfitableTp = Math.max(stopDistPct * 1.25, cost * 3.50);
+            tpDistPct = clamp(Math.max(stopDistPct * rrRatio, minProfitableTp), minProfitableTp, 0.22);
         }
 
         int scale = entryPrice.compareTo(BigDecimal.ONE) < 0 ? 5
@@ -272,13 +342,7 @@ public final class AdaptiveNumericPolicy {
         int rawLev = (int) Math.round((baseMarginRisk / stopDistPct) * convScale * volDamper * alignMult);
         int optimalLeverage = Math.max(1, Math.min(hardCap, rawLev));
 
-        return new NumericPolicy.Outcome(
-                action,
-                stopLoss,
-                takeProfit,
-                BigDecimal.valueOf(optimalLeverage),
-                "QUANT_ADAPTIVE_POLICY"
-        );
+        return new CandidateBracket(stopLoss, takeProfit, BigDecimal.valueOf(optimalLeverage));
     }
 
     private static double extractDouble(Map<String, Object> summary, String key, double fallback) {
@@ -315,6 +379,30 @@ public final class AdaptiveNumericPolicy {
             BigDecimal verifiedAtr,
             String rawRiskLevel
     ) {
+        return buildWaitSummary(
+                prediction,
+                policyReason,
+                horizonSeconds,
+                referencePrice,
+                verifiedAtr,
+                rawRiskLevel,
+                20,
+                125,
+                0.0012
+        );
+    }
+
+    public static String buildWaitSummary(
+            PredictionResult prediction,
+            String policyReason,
+            int horizonSeconds,
+            BigDecimal referencePrice,
+            BigDecimal verifiedAtr,
+            String rawRiskLevel,
+            int sessionMaxLeverage,
+            int instrumentMaxLeverage,
+            double estimatedRoundTripCost
+    ) {
         if (prediction == null) {
             return "Mevcut piyasa verisi risk eşiklerini karşılamadığı için sistem koruma amaçlı beklemede kalmayı seçti.";
         }
@@ -338,15 +426,21 @@ public final class AdaptiveNumericPolicy {
             default -> "Yatay / Kararsız Piyasa";
         };
 
-        String leanText = "Nötr / Kararsız";
         Double predRet = prediction.predictedLogReturn();
-        if (predRet != null && Math.abs(predRet) > 1e-6) {
-            leanText = predRet > 0 ? "Hafif Yükseliş (LONG) Eğilimi" : "Hafif Düşüş (SHORT) Eğilimi";
-        }
+        double rsi14 = extractDouble(summary, "rsi14", -1.0);
+        boolean leanLong = (predRet != null && Math.abs(predRet) > 1e-6)
+                ? (predRet > 0)
+                : (rsi14 < 0 || rsi14 >= 50.0);
+        String leanText = leanLong
+                ? "Hafif Yükseliş (LONG) Eğilimi"
+                : "Hafif Düşüş (SHORT) Eğilimi";
 
         double atrPct = extractDouble(summary, "atrPct", -1.0);
-        double rsi14 = extractDouble(summary, "rsi14", -1.0);
         double conf = extractDouble(summary, "signalConfidence", -1.0);
+        String riskLevel = normalizeRiskLevel(rawRiskLevel);
+        if (riskLevel == null) {
+            riskLevel = "MEDIUM";
+        }
 
         StringBuilder sb = new StringBuilder();
         sb.append("Piyasa Gözlemi (").append(tfLabel).append(") | Rejim: ").append(regime)
@@ -365,28 +459,33 @@ public final class AdaptiveNumericPolicy {
                     : (referencePrice.compareTo(BigDecimal.TEN) < 0 ? 4
                     : (referencePrice.compareTo(new BigDecimal("500")) < 0 ? 3 : 2));
             sb.append(". Referans Fiyat: ").append(referencePrice.setScale(scale, RoundingMode.HALF_UP).toPlainString());
-            if (verifiedAtr != null && verifiedAtr.compareTo(BigDecimal.ZERO) > 0 && predRet != null && Math.abs(predRet) > 1e-6) {
-                BigDecimal slBand = verifiedAtr.multiply(new BigDecimal("1.5"));
-                BigDecimal tpBand = verifiedAtr.multiply(new BigDecimal("2.6"));
-                boolean leanLong = predRet > 0;
-                BigDecimal refSl = (leanLong ? referencePrice.subtract(slBand) : referencePrice.add(slBand))
-                        .max(BigDecimal.ONE.movePointLeft(scale))
-                        .setScale(scale, RoundingMode.HALF_UP);
-                BigDecimal refTp = (leanLong ? referencePrice.add(tpBand) : referencePrice.subtract(tpBand))
-                        .max(BigDecimal.ONE.movePointLeft(scale))
-                        .setScale(scale, RoundingMode.HALF_UP);
-                sb.append(" | İzleme Referans Bandı -> SL: ").append(refSl.toPlainString())
-                        .append(" / TP: ").append(refTp.toPlainString());
+            if (verifiedAtr != null && verifiedAtr.compareTo(BigDecimal.ZERO) > 0) {
+                CandidateBracket bracket = computeCandidateBracket(
+                        prediction,
+                        leanLong,
+                        referencePrice,
+                        verifiedAtr,
+                        riskLevel,
+                        sessionMaxLeverage,
+                        instrumentMaxLeverage,
+                        estimatedRoundTripCost
+                );
+                sb.append(" | ATR: ").append(verifiedAtr.setScale(scale, RoundingMode.HALF_UP).toPlainString())
+                        .append(" | Önerilen Kaldıraç: ").append(bracket.suggestedLeverage().toPlainString()).append("x")
+                        .append(" | İzleme Referans Bandı -> SL: ").append(bracket.stopLoss().toPlainString())
+                        .append(" / TP: ").append(bracket.takeProfit().toPlainString());
             }
         }
         String waitCause = switch (policyReason != null ? policyReason : "") {
             case "VOLATILITY_REGIME_UNSAFE" -> "Ani ve yüksek oynaklık riski nedeniyle sermaye koruması önceliklendirildi.";
-            case "CHOPPY_MARKET_WAIT" -> "Piyasa yatay seyrettiği için seçili risk seviyesinde güvenli giriş eşiği oluşmadı.";
+            case "CHOPPY_MARKET_WAIT" -> "Piyasa yatay ve yönsüz seyrettiği için düşük kaliteli işlem açılmadı.";
+            case "NEGATIVE_NET_EXPECTANCY" -> "Komisyon ve stop-loss oranı sonrası net beklenen getiri pozitif eşiği geçmediği için bekleme önerildi.";
+            case "HTF_COUNTER_TREND_WAIT" -> "Ana üst zaman dilimi trendine ters yön riski nedeniyle bekleme önerildi.";
             case "EDGE_BELOW_COST_HURDLE" -> "Beklenen fiyat hareketi işlem komisyonu ve kayma maliyetini yeterince aşmadığı için bekleme önerildi.";
             default -> "Sinyal güveni seçili risk koruma eşiğinin altında kaldığı için bekleme önerildi.";
         };
         sb.append(". ").append(waitCause);
-        if (!"HIGH".equals(normalizeRiskLevel(rawRiskLevel)) && !"VOLATILITY_REGIME_UNSAFE".equals(policyReason)) {
+        if (!"HIGH".equals(riskLevel) && !"VOLATILITY_REGIME_UNSAFE".equals(policyReason)) {
             sb.append(" Daha aktif fırsat ve işlem önerisi görmek için risk seviyesini 'Yüksek (Maks. Kâr)' olarak seçip yeniden analiz başlatabilirsiniz.");
         }
         return sb.toString();

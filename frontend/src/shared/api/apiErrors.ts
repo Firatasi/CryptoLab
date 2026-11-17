@@ -64,6 +64,9 @@ const CODE_MESSAGES_TR: Record<string, string> = {
   SESSION_HALTED: 'Bu sanal oturum şu anda duraklatılmış durumda; yeni pozisyon açılamaz.',
   MIN_NOTIONAL: 'Emir tutarı bu sözleşme için gereken en düşük işlem tutarının altında.',
   INVALID_LEVERAGE: 'Seçilen kaldıraç oranı seçili varlık veya risk sınırlarınızın dışında.',
+  INVALID_TICK: 'Fiyat bu varlık için gereken en küçük fiyat adımının (tick) katı değil.',
+  INSUFFICIENT_RISK_CAPACITY:
+    'Pozisyon büyüklüğü oturum risk politikası veya maksimum pozisyon sınırı içinde oluşturulamadı.',
   INVALID_STOP: 'Zarar Durdur (SL) seviyesi mevcut piyasa fiyatına ve işlem yönüne göre geçersiz.',
   INVALID_TARGET: 'Kâr Al (TP) seviyesi mevcut piyasa fiyatına ve işlem yönüne göre geçersiz.',
   STOP_LOSS_PAST_LIQUIDATION:

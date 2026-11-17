@@ -304,6 +304,57 @@ class AutoStopTakeProfitTest {
         assertEquals(0, idleRow.get("openPositionCount"));
     }
 
+    @Test
+    @Transactional
+    void liveProfitLockMovesStopLossToFeeCoveredBreakEvenAndTrailingProfit() {
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = createSession.execute(owner, new BigDecimal("1000"), RULE_PROFILE, RISK_POLICY_50X);
+        Instant t0 = Instant.parse("2026-11-17T10:00:00Z");
+
+        // LONG entry=80000, SL=79200, TP=82000 (hedef mesafe 2000)
+        UUID longPosId = insertPosition(sessionId, BTC_ID, "LONG", "0.1", "80000", "160", "79200", "82000", t0);
+        // SHORT entry=2500, SL=2530, TP=2400 (hedef mesafe 100)
+        UUID shortPosId = insertPosition(sessionId, ETH_ID, "SHORT", "1", "2500", "50", "2530", "2400", t0);
+
+        // 1. TP yolunun %60'ina ulasildiginda (LONG: 81200, SHORT: 2440) -> net komisyon korumali Break-Even SL kilidi
+        var breakEvenEvents = reportingService.processAutomaticExits(
+                owner,
+                sessionId,
+                id -> id.equals(BTC_ID) ? Optional.of(new BigDecimal("81200")) : Optional.of(new BigDecimal("2440")),
+                t0.plusSeconds(15)
+        );
+        assertTrue(breakEvenEvents.isEmpty());
+
+        BigDecimal longBeSl = jdbc.queryForObject("SELECT stop_loss FROM positions WHERE id = ?", BigDecimal.class, longPosId);
+        BigDecimal shortBeSl = jdbc.queryForObject("SELECT stop_loss FROM positions WHERE id = ?", BigDecimal.class, shortPosId);
+        assertTrue(longBeSl.compareTo(new BigDecimal("80050")) > 0, "LONG stopLoss komisyon + giris ustune tasinmali: " + longBeSl);
+        assertTrue(shortBeSl.compareTo(new BigDecimal("2498")) < 0, "SHORT stopLoss komisyon + giris altina tasinmali: " + shortBeSl);
+
+        // 2. LONG TP yolunun %82'sine (81640) ulastiginda -> TP mesafesinin %40'i (80800) trailing stop olarak kilitlenmeli
+        var trailEvents = reportingService.processAutomaticExits(
+                owner,
+                sessionId,
+                id -> id.equals(BTC_ID) ? Optional.of(new BigDecimal("81640")) : Optional.of(new BigDecimal("2440")),
+                t0.plusSeconds(30)
+        );
+        assertTrue(trailEvents.isEmpty());
+        BigDecimal longTrailSl = jdbc.queryForObject("SELECT stop_loss FROM positions WHERE id = ?", BigDecimal.class, longPosId);
+        assertTrue(longTrailSl.compareTo(new BigDecimal("80799")) > 0, "LONG trailing SL >= 80800 olmali: " + longTrailSl);
+
+        // 3. Fiyat geri donerse kilitli trailing SL tetiklenmeli ve islem NET KAR ile kapanmali
+        var closedEvents = reportingService.processAutomaticExits(
+                owner,
+                sessionId,
+                id -> id.equals(BTC_ID) ? Optional.of(new BigDecimal("80780")) : Optional.of(new BigDecimal("2440")),
+                t0.plusSeconds(45)
+        );
+        assertEquals(1, closedEvents.size());
+        assertEquals(AutoExitReason.STOP_LOSS, closedEvents.getFirst().reason());
+        assertTrue(closedEvents.getFirst().realizedPnl().compareTo(new BigDecimal("70")) > 0);
+        assertEquals("CLOSED", jdbc.queryForObject("SELECT state FROM positions WHERE id = ?", String.class, longPosId));
+        assertEquals("OPEN", jdbc.queryForObject("SELECT state FROM positions WHERE id = ?", String.class, shortPosId));
+    }
+
     private UUID insertPosition(
             UUID sessionId,
             UUID instrumentId,

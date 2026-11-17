@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
@@ -14,9 +14,13 @@ import {
   diagnoseOrderSizing,
   estimateLiquidationPrice,
   estimateOrderSizing,
+  estimateRoundTripFeeUsd,
+  maxSafeMarginBudgetForAvailableBalance,
   pnlUsdFromTriggerPrice,
+  resolveOrderFeeRates,
   stopLossPriceFromUsd,
   takeProfitPriceFromUsd,
+  validatePriceTickAlignment,
 } from '@/features/trading/orderBracketMath';
 import type { AiProposalSeed } from '@/features/trading/OrderTicket';
 import type { MarketSnapshot, PositionView } from '@/shared/contracts/types';
@@ -527,5 +531,154 @@ describe('USDT Bazlı SL/TP Hesabı, Tasfiye Sınırı Doğrulaması ve Emir Ak�
       expect(capped.budgetMaxSafeStopLossUsd).not.toBeNull();
       expect(capped.budgetMaxSafeStopLossUsd!).toBeLessThan(2);
     }
+  });
+
+  it('Fiyat modunda ters yön SL/TP girişini ve LIMIT emirlerde geçersiz tick adımını anında engeller', async () => {
+    const user = userEvent.setup();
+    setAccessToken(TEST_TOKENS.user);
+    let previewCalled = false;
+
+    server.use(
+      http.get('/api/v1/market/quotes', () => HttpResponse.json(CUSTOM_QUOTE)),
+      http.post('/api/v1/sim/order-previews', () => {
+        previewCalled = true;
+        return HttpResponse.json({}, { status: 400 });
+      }),
+    );
+
+    renderTradeRoute('/trade/sess-1?instrumentId=BTCUSDT');
+    await screen.findByTestId('mark-price-value');
+
+    const slInput = screen.getByLabelText(/Zarar Durdur \(SL\)/i);
+    await user.type(slInput, '81000');
+    expect(await screen.findByText(/LONG pozisyonda Stop-Loss fiyatı .* altında olmalıdır/i)).toBeInTheDocument();
+
+    const tpInput = screen.getByLabelText(/Kâr Al \(TP\)/i);
+    await user.type(tpInput, '79000');
+    expect(await screen.findByText(/LONG pozisyonda Take-Profit fiyatı .* üzerinde olmalıdır/i)).toBeInTheDocument();
+
+    await user.click(await screen.findByRole('button', { name: /Sunucu Emir Önizlemesi Al/i }));
+    expect(previewCalled).toBe(false);
+
+    // LIMIT moda geçilip tickSize (0.01) dışına çıkıldığında anında uyarır
+    await user.clear(slInput);
+    await user.clear(tpInput);
+    await user.click(screen.getByRole('button', { name: /LİMİT \(LIMIT\)/i }));
+    const limitInput = screen.getByLabelText(/Limit Fiyatı/i);
+    await user.type(limitInput, '79500.123');
+    expect(await screen.findByText(/geçerli adımın \(0\.01\) katı olmalıdır/i)).toBeInTheDocument();
+
+    await user.click(await screen.findByRole('button', { name: /Sunucu Emir Önizlemesi Al/i }));
+    expect(previewCalled).toBe(false);
+  });
+
+  it('Komisyon dahil bakiye aşımını uyarır, tek tıkla sığdırır ve komisyonu aşmayan TP hedefini bildirir', async () => {
+    const user = userEvent.setup();
+    setAccessToken(TEST_TOKENS.user);
+
+    server.use(
+      http.get('/api/v1/market/quotes', () => HttpResponse.json(CUSTOM_QUOTE)),
+      http.get('/api/v1/sim/sessions/sess-tight', () =>
+        HttpResponse.json({
+          id: 'sess-tight',
+          mode: 'LIVE_PAPER',
+          status: 'RUNNING',
+          currency: 'USDT',
+          initialDeposit: '250.00',
+          availableBalance: '250.00',
+          isolatedMargin: '0.00',
+          equity: '250.00',
+          ruleProfileId: '88888888-8888-4888-8888-888888888888',
+          riskPolicyId: '99999999-9999-4999-8999-999999999999',
+          createdAt: '2026-11-13T00:00:00Z',
+        }),
+      ),
+    );
+
+    renderTradeRoute('/trade/sess-tight?instrumentId=BTCUSDT');
+    await screen.findByTestId('mark-price-value');
+
+    // Varsayılan 250 bütçe + 16x kaldıraç: 250*16/80000 = 0.050 BTC -> 250.00 teminat + 1.60 açılış ücreti = 251.60 > 250 bakiye!
+    const levInput = screen.getByLabelText(/Kaldıraç/i);
+    await user.clear(levInput);
+    await user.type(levInput, '16');
+
+    const shortfall = await screen.findByTestId('balance-shortfall-notice');
+    expect(shortfall).toHaveTextContent(/yetersiz/i);
+
+    await user.click(screen.getByRole('button', { name: /Bakiyeye Sığdır/i }));
+    expect(screen.queryByTestId('balance-shortfall-notice')).not.toBeInTheDocument();
+
+    // Küçük TP (2 USDT) gidiş-dönüş komisyonunun altındaysa net zarar uyarısı görünür
+    await user.click(screen.getByRole('button', { name: /TP giriş modu: USDT/i }));
+    const tpInput = screen.getByLabelText(/Kâr Al \(TP\)/i);
+    await user.type(tpInput, '2');
+
+    const feeWarn = await screen.findByTestId('tp-fee-warning');
+    expect(feeWarn).toHaveTextContent(/komisyonunu .* aşmadığı için/i);
+  });
+
+  it('Açık pozisyon SL/TP düzenleme modalında kâra çekilen trailing SL kabul edilir ve mod değişiminde ham fiyat sızmaz', async () => {
+    const user = userEvent.setup();
+    setAccessToken(TEST_TOKENS.user);
+
+    const openLongInProfit: PositionView = {
+      ...canonicalPositions[0],
+      positionId: 'pos-trail-1',
+      side: 'LONG',
+      quantity: '0.1',
+      entryPrice: '80000.00',
+      markPrice: '85000.00',
+      isolatedMargin: '800.00',
+      leverage: '10',
+      stopLoss: null,
+      takeProfit: null,
+    };
+
+    server.use(
+      http.get('/api/v1/market/quotes', () => HttpResponse.json(CUSTOM_QUOTE)),
+      http.get('/api/v1/sim/positions', () => HttpResponse.json({ items: [openLongInProfit] })),
+    );
+
+    renderTradeRoute('/trade/sess-1?instrumentId=BTCUSDT');
+    await screen.findByTestId('position-row-pos-trail-1');
+
+    await user.click(screen.getByRole('button', { name: /SL\/TP/i }));
+
+    const slModalInput = screen.getByLabelText(/Yeni Stop-Loss/i);
+    await user.clear(slModalInput);
+    await user.type(slModalInput, '82000');
+
+    // Giriş 80.000 üzerinde ama anlık mark 85.000 altında -> kâr kilidi kabul edilmeli!
+    expect(await screen.findByText(/Tahmini kâr kilidi: ~\+200,00 USDT/i)).toBeInTheDocument();
+
+    // USDT moduna geçildiğinde kâr kilidindeki SL zarara çevrilemez olduğu için 82000 sızmamalı
+    const modalSlToggle = screen.getByRole('group', { name: /Modal Stop-Loss modu/i });
+    await user.click(within(modalSlToggle).getByRole('button', { name: 'USDT ($)' }));
+    expect(slModalInput).toHaveValue('');
+
+    // Mark fiyatının (85000) üzerine çıkan SL fiyatını anında reddeder
+    await user.click(within(modalSlToggle).getByRole('button', { name: 'Fiyat' }));
+    await user.type(slModalInput, '86000');
+    expect(await screen.findByText(/referans fiyatın \(85000\) altında olmalıdır/i)).toBeInTheDocument();
+  });
+
+  it('komisyon oranları, tick adımı ve bakiye üst sınırı backend kurallarıyla uyumludur', () => {
+    expect(resolveOrderFeeRates('88888888-8888-4888-8888-888888888889', 'LIMIT')).toEqual({
+      openRate: 0.0001,
+      closeMarketRate: 0.00025,
+    });
+    expect(
+      estimateRoundTripFeeUsd({
+        quantity: 0.1,
+        entryPrice: 80000,
+        triggerPrice: 82000,
+        openFeeRate: 0.0004,
+        closeMarketFeeRate: 0.0004,
+      }),
+    ).toBeCloseTo(6.48, 2);
+    expect(validatePriceTickAlignment(80000.05)).toBeNull();
+    expect(validatePriceTickAlignment(80000.005)).not.toBeNull();
+    expect(maxSafeMarginBudgetForAvailableBalance(250, 20, 0.0004)).toBe(248.01);
   });
 });
