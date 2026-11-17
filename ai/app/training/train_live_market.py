@@ -69,21 +69,21 @@ BINANCE_FAPI_FUNDING = "https://fapi.binance.com/fapi/v1/fundingRate"
 LOCAL_MARKET_DATA_URL = "http://127.0.0.1:8082"
 
 ESTIMATED_ROUND_TRIP_FEE_LOG = 0.0012  # ~12 bps round-trip taker + slippage
-TRIPLE_BARRIER_TP_ATR = 1.75
-TRIPLE_BARRIER_SL_ATR = 1.85
+TRIPLE_BARRIER_TP_ATR = 2.80
+TRIPLE_BARRIER_SL_ATR = 1.65
 TRIPLE_BARRIER_MAX_HOLD_BARS: dict[int, int] = {
-    60: 16,
-    900: 12,
-    3600: 12,
-    86400: 12,
-    604800: 12,
+    60: 24,
+    900: 18,
+    3600: 18,
+    86400: 16,
+    604800: 14,
 }
 HORIZON_MIN_SL_PCT: dict[int, float] = {
     60: 0.0028,
-    900: 0.0050,
-    3600: 0.0080,
-    86400: 0.0140,
-    604800: 0.0240,
+    900: 0.0045,
+    3600: 0.0070,
+    86400: 0.0125,
+    604800: 0.0220,
 }
 HORIZON_TRAIN_STRIDE: dict[int, int] = {
     60: 3,
@@ -323,7 +323,7 @@ def _simulate_side_barrier(
     is_short_horizon = min_sl_pct <= 0.0030
     sl_atr_mult = 1.50 if is_short_horizon else TRIPLE_BARRIER_SL_ATR
     sl_frac = max(sl_atr_mult * atr_pct, min_sl_pct)
-    tp_frac = (1.85 * sl_frac) if is_short_horizon else (0.95 * sl_frac)
+    tp_frac = max(1.68 * sl_frac, 3.80 * ESTIMATED_ROUND_TRIP_FEE_LOG)
     tp_r = tp_frac / sl_frac
     fee_r = ESTIMATED_ROUND_TRIP_FEE_LOG / sl_frac
 
@@ -721,11 +721,14 @@ def _evaluate_quant_strategy(
         y_preds.append(pred_ret)
 
         conf = float(res["summaryExtras"]["signalConfidence"])
+        ev_r = float(res["summaryExtras"].get("barrierEvR", 0.0))
         codes = set(res["reasonCodes"])
-        htf_ok = True if horizon > 60 else ("HTF_TREND_CONFIRMED" in codes or "TRIPLE_CONFLUENCE_CONFIRMED" in codes)
+        htf_ok = True if horizon > 3600 else ("HTF_TREND_CONFIRMED" in codes or "TRIPLE_CONFLUENCE_CONFIRMED" in codes)
         if (
-            conf >= 0.55
+            conf >= 0.60
+            and ev_r >= 0.02
             and htf_ok
+            and "LOW_CONFIDENCE" not in codes
             and "CHOPPY_REGIME" not in codes
             and "VOLATILITY_REGIME_UNSAFE" not in codes
             and "MEAN_REVERSION_EXHAUSTION" not in codes

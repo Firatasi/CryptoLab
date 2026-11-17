@@ -5,8 +5,9 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { http, HttpResponse } from 'msw';
 import { server } from './mocks/server';
+import { TEST_TOKENS } from './mocks/handlers';
 import { createTestQueryClient } from '@/app/App';
-import { appRoutes } from '@/app/router';
+import { appRoutes, routerFutureConfig } from '@/app/router';
 import { AuthProvider } from '@/features/auth/AuthContext';
 import { setAccessToken } from '@/shared/api/apiClient';
 
@@ -16,11 +17,14 @@ afterEach(() => {
 
 function renderRoute(initialEntry: string) {
   const queryClient = createTestQueryClient();
-  const router = createMemoryRouter(appRoutes, { initialEntries: [initialEntry] });
+  const router = createMemoryRouter(appRoutes, {
+    initialEntries: [initialEntry],
+    future: routerFutureConfig,
+  });
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <RouterProvider router={router} />
+        <RouterProvider router={router} future={{ v7_startTransition: true }} />
       </AuthProvider>
     </QueryClientProvider>,
   );
@@ -130,6 +134,11 @@ describe('Kayıt Ekranı CAPTCHA, İletişim Formu ve Admin Paneli', () => {
     const user = userEvent.setup();
     renderRoute('/');
 
+    expect(screen.queryByText(/research@cryptolab\.dev/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/ARAŞTIRMA & AKADEMİK İŞBİRLİĞİ/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/TEKNİK DESTEK & SİSTEM OPERASYONU/i)).toBeInTheDocument();
+    expect(screen.getByText(/support@cryptolab\.dev/i)).toBeInTheDocument();
+
     await user.type(screen.getByLabelText(/Ad Soyad/i), 'Mehmet Demir');
     await user.type(screen.getByLabelText(/E-Posta Adresi/i), 'mehmet@ornek.com');
     await user.type(screen.getByLabelText(/^Konu/i), 'Hesap Desteği');
@@ -191,5 +200,47 @@ describe('Kayıt Ekranı CAPTCHA, İletişim Formu ve Admin Paneli', () => {
     expect(screen.getByTestId('timezone-preview')).toHaveTextContent(/TSİ/);
     await user.selectOptions(screen.getByLabelText(/Zaman Dilimi/i), 'UTC');
     expect(screen.getByTestId('timezone-preview')).toHaveTextContent(/UTC/);
+  });
+
+  it('Admin overview API 500 döndürürse boş kayıt yerine sunucu hatası ve Tekrar Dene butonu gösterir', async () => {
+    setAccessToken(TEST_TOKENS.admin);
+    let failOnce = true;
+
+    server.use(
+      http.get('/api/v1/auth/admin/overview', () => {
+        if (failOnce) {
+          failOnce = false;
+          return HttpResponse.json(
+            { code: 'INTERNAL_ERROR', message: 'İstek tamamlanamadı.' },
+            { status: 500 },
+          );
+        }
+        return HttpResponse.json({
+          liveUserCount: 2,
+          activeSessionUsersCount: 2,
+          totalUserCount: 4,
+          newContactCount: 0,
+          totalContactCount: 0,
+          supportInbox: 'support@cryptolab.dev',
+          messages: [],
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderRoute('/admin');
+
+    expect(await screen.findByText('Yönetici paneli verileri alınamadı')).toBeInTheDocument();
+    expect(screen.getByText(/İletişim formu kayıtları sunucudan alınamadı/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Seçili filtreye uygun iletişim formu kaydı bulunmuyor\./i),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Tekrar Dene/i }));
+
+    expect(await screen.findByTestId('live-user-count')).toHaveTextContent('2');
+    expect(
+      screen.getByText(/Seçili filtreye uygun iletişim formu kaydı bulunmuyor\./i),
+    ).toBeInTheDocument();
   });
 });

@@ -99,8 +99,10 @@ public class SessionController {
     }
 
     @GetMapping("/sessions")
+    @Transactional
     public Map<String, Object> listSessions(@AuthenticationPrincipal Jwt jwt) {
         UUID ownerId = UUID.fromString(jwt.getSubject());
+        liquidationMonitorService.checkAndPublishIfEnabled(ownerId, null);
         return Map.of("items", querySessionMaps(ownerId, null));
     }
 
@@ -592,7 +594,7 @@ public class SessionController {
                     horizon_seconds, close_requested, opened_at
                 FROM positions
                 WHERE session_id = ? AND state IN ('OPEN', 'LIQUIDATING')
-                ORDER BY opened_at DESC
+                ORDER BY opened_at DESC, id DESC
                 """,
                 (rs, n) -> mapPositionRow(rs),
                 sessionId
@@ -850,6 +852,9 @@ public class SessionController {
                 margin,
                 SimulationReportingService.DEFAULT_MAINTENANCE_TIERS
         ).orElse(null);
+        BigDecimal maintMargin = q.signum() > 0 && mark.signum() > 0
+                ? Finance.maintenance(q, mark, SimulationReportingService.DEFAULT_MAINTENANCE_TIERS)
+                : BigDecimal.ZERO;
 
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("positionId", rs.getObject("id", UUID.class).toString());
@@ -863,7 +868,7 @@ public class SessionController {
         m.put("markPrice", Decimal.wire(mark));
         m.put("markAsOf", clock.instant().toString());
         m.put("isolatedMargin", Decimal.wire(margin));
-        m.put("maintenanceMargin", Decimal.wire(notional.multiply(new BigDecimal("0.005"))));
+        m.put("maintenanceMargin", Decimal.wire(maintMargin));
         m.put("unrealizedPnl", Decimal.wire(pnl));
         m.put("estimatedLiquidationPrice", liq != null ? Decimal.wire(liq) : null);
         m.put("leverage", Decimal.wire(leverage));
@@ -948,6 +953,11 @@ public class SessionController {
                         FROM positions p
                         WHERE p.session_id = s.id AND p.state IN ('OPEN', 'LIQUIDATING')
                     ), 0) AS isolated_margin,
+                    COALESCE((
+                        SELECT SUM(o.reserved_amount)
+                        FROM orders o
+                        WHERE o.session_id = s.id AND o.status = 'NEW'
+                    ), 0) AS reserved_balance,
                     (
                         SELECT h.reason
                         FROM halt_reasons h
@@ -975,9 +985,10 @@ public class SessionController {
                     BigDecimal initialDeposit = rs.getBigDecimal("initial_deposit");
                     BigDecimal available = rs.getBigDecimal("available_balance");
                     BigDecimal isolated = rs.getBigDecimal("isolated_margin");
+                    BigDecimal reserved = rs.getBigDecimal("reserved_balance");
                     BigDecimal unrealized = Decimal.cash(unrealizedBySession.getOrDefault(sid, BigDecimal.ZERO));
-                    BigDecimal realized = Decimal.cash(available.add(isolated).subtract(initialDeposit));
-                    BigDecimal equity = available.add(isolated).add(unrealized);
+                    BigDecimal realized = Decimal.cash(available.add(isolated).add(reserved).subtract(initialDeposit));
+                    BigDecimal equity = available.add(isolated).add(reserved).add(unrealized);
                     BigDecimal netPnl = Decimal.cash(equity.subtract(initialDeposit));
                     BigDecimal netPnlPercent = initialDeposit != null && initialDeposit.signum() > 0
                             ? netPnl.multiply(new BigDecimal("100"))

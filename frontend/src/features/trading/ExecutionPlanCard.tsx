@@ -12,10 +12,12 @@ import {
 } from '@/shared/formatting/formatters';
 import { Badge, Button, SideBadge } from '@/shared/ui/Primitives';
 import {
+  estimateRoundTripFeeUsd,
   estimateSizingFromOpenPosition,
   formatFixedDecimal,
   parseFiniteDecimal,
   pnlUsdFromTriggerPrice,
+  resolveOrderFeeRates,
 } from './orderBracketMath';
 
 export interface ExecutionPlanCardProps {
@@ -57,10 +59,12 @@ export function ExecutionPlanCard({
   }, [plan.validUntil]);
 
   const isClientExpired = remainingSec <= 0;
+  const planEntry = parseFiniteDecimal(plan.limitPrice ?? plan.referenceEntry);
+  const planQty = parseFiniteDecimal(plan.quantity);
   const planSizing = estimateSizingFromOpenPosition({
     side: plan.side,
-    quantity: parseFiniteDecimal(plan.quantity),
-    entryPrice: parseFiniteDecimal(plan.limitPrice ?? plan.referenceEntry),
+    quantity: planQty,
+    entryPrice: planEntry,
     margin: parseFiniteDecimal(plan.marginRequired),
   });
   const slTrigger = parseFiniteDecimal(plan.stopLoss);
@@ -73,6 +77,34 @@ export function ExecutionPlanCard({
     planSizing && tpTrigger !== null
       ? pnlUsdFromTriggerPrice(plan.side, planSizing, tpTrigger, 'TP')
       : null;
+  const feeRates = resolveOrderFeeRates(plan.ruleProfileId, plan.orderType);
+  const fixedOpenFee = parseFiniteDecimal(plan.openFeeEstimate);
+  const slRoundTripFee =
+    planQty !== null && planEntry !== null && slTrigger !== null
+      ? estimateRoundTripFeeUsd({
+          quantity: planQty,
+          entryPrice: planEntry,
+          triggerPrice: slTrigger,
+          openFeeRate: feeRates.openRate,
+          closeMarketFeeRate: feeRates.closeMarketRate,
+          fixedOpenFeeUsd: fixedOpenFee,
+        })
+      : null;
+  const tpRoundTripFee =
+    planQty !== null && planEntry !== null && tpTrigger !== null
+      ? estimateRoundTripFeeUsd({
+          quantity: planQty,
+          entryPrice: planEntry,
+          triggerPrice: tpTrigger,
+          openFeeRate: feeRates.openRate,
+          closeMarketFeeRate: feeRates.closeMarketRate,
+          fixedOpenFeeUsd: fixedOpenFee,
+        })
+      : null;
+  const netSlUsd = slUsd !== null && slRoundTripFee !== null ? Number((slUsd + slRoundTripFee).toFixed(2)) : null;
+  const netTpUsd = tpUsd !== null && tpRoundTripFee !== null ? Number((tpUsd - tpRoundTripFee).toFixed(2)) : null;
+  const rrRatio =
+    slUsd !== null && tpUsd !== null && slUsd > 0 ? Number((tpUsd / slUsd).toFixed(2)) : null;
 
   return (
     <div
@@ -147,13 +179,28 @@ export function ExecutionPlanCard({
         </div>
 
         <div className="col-span-2 min-w-0 rounded-none border border-[#e5e5e5] bg-white p-2">
-          <div className="truncate font-sans text-[11px] text-[#737373]">Zarar Durdur / Kâr Al (SL / TP)</div>
+          <div className="flex items-center justify-between gap-2 font-sans text-[11px] text-[#737373]">
+            <span className="truncate">Zarar Durdur / Kâr Al (SL / TP)</span>
+            {rrRatio !== null && (
+              <span className="shrink-0 font-mono text-[10px] font-semibold text-[#0a0a0a]">
+                R:R 1 : {rrRatio.toFixed(2)}
+              </span>
+            )}
+          </div>
           <div className="mt-0.5 truncate text-[#0a0a0a]">
             SL: {formatPrice(plan.stopLoss)}
             {slUsd !== null ? ` (${formatSignedMoney(`-${formatFixedDecimal(slUsd, 2)}`, currency, 2)})` : ''} ·{' '}
             TP: {formatPrice(plan.takeProfit)}
             {tpUsd !== null ? ` (${formatSignedMoney(formatFixedDecimal(tpUsd, 2), currency, 2)})` : ''}
           </div>
+          {(netSlUsd !== null || netTpUsd !== null) && (
+            <div className="mt-0.5 truncate font-sans text-[10px] text-[#525252]">
+              Komisyon sonrası net tahmin:
+              {netSlUsd !== null ? ` SL ${formatSignedMoney(`-${formatFixedDecimal(netSlUsd, 2)}`, currency, 2)}` : ''}
+              {netSlUsd !== null && netTpUsd !== null ? ' ·' : ''}
+              {netTpUsd !== null ? ` TP ${formatSignedMoney(formatFixedDecimal(netTpUsd, 2), currency, 2)}` : ''}
+            </div>
+          )}
         </div>
 
         <div className="col-span-2 min-w-0 rounded-none border border-[#e5e5e5] bg-white p-2">

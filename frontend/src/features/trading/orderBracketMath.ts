@@ -1,9 +1,29 @@
-import type { PositionSide } from '@/shared/contracts/types';
+import type { OrderType, PositionSide } from '@/shared/contracts/types';
 
 export type BracketInputMode = 'PRICE' | 'USDT';
 
 export const DEFAULT_MAINTENANCE_MARGIN_RATE = 0.005;
 export const DEFAULT_MIN_NOTIONAL_USD = 5;
+
+const VIP_RULE_PROFILE_ID = '88888888-8888-4888-8888-888888888889';
+const SCALPING_RULE_PROFILE_ID = '88888888-8888-4888-8888-888888888890';
+
+/**
+ * Backend SimulationMarketCatalog.resolveTakerFeeRate ile birebir uyumlu komisyon oranları.
+ */
+export function resolveOrderFeeRates(
+  ruleProfileId?: string | null,
+  orderType: OrderType = 'MARKET',
+): { openRate: number; closeMarketRate: number } {
+  const isLimit = orderType === 'LIMIT';
+  if (ruleProfileId === VIP_RULE_PROFILE_ID) {
+    return { openRate: isLimit ? 0.0001 : 0.00025, closeMarketRate: 0.00025 };
+  }
+  if (ruleProfileId === SCALPING_RULE_PROFILE_ID) {
+    return { openRate: isLimit ? 0 : 0.0003, closeMarketRate: 0.0003 };
+  }
+  return { openRate: isLimit ? 0.0002 : 0.0004, closeMarketRate: 0.0004 };
+}
 
 export interface OrderSizingEstimate {
   entryPrice: number;
@@ -12,6 +32,10 @@ export interface OrderSizingEstimate {
   margin: number;
   tickSize: number;
   stepSize: number;
+  openFeeRate: number;
+  closeMarketFeeRate: number;
+  estimatedOpenFeeUsd: number;
+  requiredCashUsd: number;
   estimatedLiquidationPrice: number | null;
   /** Likidasyon sınırına kadarki brüt azami zarar (USDT). */
   rawLiquidationLossUsd: number | null;
@@ -166,6 +190,8 @@ export function diagnoseOrderSizing(params: {
   leverage: number | null;
   minNotionalUsd?: number;
   availableBalance?: number | null;
+  ruleProfileId?: string | null;
+  orderType?: OrderType;
 }): OrderSizingDiagnosis {
   const {
     side,
@@ -174,7 +200,13 @@ export function diagnoseOrderSizing(params: {
     leverage,
     minNotionalUsd = DEFAULT_MIN_NOTIONAL_USD,
     availableBalance = null,
+    ruleProfileId = null,
+    orderType = 'MARKET',
   } = params;
+  const { openRate: openFeeRate, closeMarketRate: closeMarketFeeRate } = resolveOrderFeeRates(
+    ruleProfileId,
+    orderType,
+  );
 
   const effectiveMarginBudget =
     marginBudget !== null &&
@@ -231,6 +263,8 @@ export function diagnoseOrderSizing(params: {
   }
 
   const margin = notional / leverage;
+  const estimatedOpenFeeUsd = notional * openFeeRate;
+  const requiredCashUsd = margin + estimatedOpenFeeUsd;
   const estimatedLiquidationPrice = estimateLiquidationPrice(side, quantity, entryPrice, margin);
 
   let rawLiquidationLossUsd: number | null = null;
@@ -258,6 +292,10 @@ export function diagnoseOrderSizing(params: {
       margin,
       tickSize,
       stepSize,
+      openFeeRate,
+      closeMarketFeeRate,
+      estimatedOpenFeeUsd,
+      requiredCashUsd,
       estimatedLiquidationPrice,
       rawLiquidationLossUsd,
       maxSafeStopLossUsd,
@@ -324,6 +362,10 @@ export function estimateSizingFromOpenPosition(params: {
     margin,
     tickSize,
     stepSize,
+    openFeeRate: 0.0004,
+    closeMarketFeeRate: 0.0004,
+    estimatedOpenFeeUsd: quantity * entryPrice * 0.0004,
+    requiredCashUsd: margin + quantity * entryPrice * 0.0004,
     estimatedLiquidationPrice,
     rawLiquidationLossUsd,
     maxSafeStopLossUsd,
@@ -471,4 +513,114 @@ export function validateStopLossPriceAgainstLiquidation(
         })
       : '0,00';
   return `Girilen Stop-Loss (${stopPrice}) likidasyon seviyesini (${liqPriceText}) aşıyor. Pozisyon daha erken likid olur; en fazla ${maxText} USDT zarar girebilirsiniz.`;
+}
+
+/**
+ * Fiyat modunda girilen SL/TP'nin referans fiyata (yeni emirde giriş, açık pozisyonda markPrice) göre doğru tarafta olup olmadığını doğrular.
+ */
+export function validateBracketPriceDirection(params: {
+  side: PositionSide;
+  kind: 'SL' | 'TP';
+  referencePrice: number | null;
+  triggerPrice: number | null;
+}): string | null {
+  const { side, kind, referencePrice, triggerPrice } = params;
+  if (
+    referencePrice === null ||
+    triggerPrice === null ||
+    !(referencePrice > 0) ||
+    !(triggerPrice > 0)
+  ) {
+    return null;
+  }
+  const refText = formatFixedDecimal(referencePrice, stepDecimals(inferTickSize(referencePrice)));
+  if (kind === 'SL') {
+    if (side === 'LONG' && triggerPrice >= referencePrice) {
+      return `LONG pozisyonda Stop-Loss fiyatı (${triggerPrice}) referans fiyatın (${refText}) altında olmalıdır.`;
+    }
+    if (side === 'SHORT' && triggerPrice <= referencePrice) {
+      return `SHORT pozisyonda Stop-Loss fiyatı (${triggerPrice}) referans fiyatın (${refText}) üzerinde olmalıdır.`;
+    }
+    return null;
+  }
+  if (side === 'LONG' && triggerPrice <= referencePrice) {
+    return `LONG pozisyonda Take-Profit fiyatı (${triggerPrice}) referans fiyatın (${refText}) üzerinde olmalıdır.`;
+  }
+  if (side === 'SHORT' && triggerPrice >= referencePrice) {
+    return `SHORT pozisyonda Take-Profit fiyatı (${triggerPrice}) referans fiyatın (${refText}) altında olmalıdır.`;
+  }
+  return null;
+}
+
+/**
+ * Verilen fiyatın SessionController.inferTickSize adımıyla uyumlu olup olmadığını doğrular.
+ */
+export function validatePriceTickAlignment(price: number | null): string | null {
+  if (price === null || !(price > 0)) return null;
+  const tick = inferTickSize(price);
+  const steps = price / tick;
+  if (Math.abs(steps - Math.round(steps)) > 1e-6) {
+    const tickText = formatFixedDecimal(tick, stepDecimals(tick));
+    return `Limit fiyatı bu fiyat aralığı için geçerli adımın (${tickText}) katı olmalıdır.`;
+  }
+  return null;
+}
+
+/**
+ * Verilen tetik fiyatında açılan pozisyonun brüt K/Z tutarını işaretli (+ kâr, - zarar) döndürür.
+ */
+export function signedPnlUsdAtTriggerPrice(
+  side: PositionSide,
+  entryPrice: number,
+  quantity: number,
+  triggerPrice: number,
+): number | null {
+  if (!(entryPrice > 0) || !(quantity > 0) || !(triggerPrice > 0)) return null;
+  const raw =
+    side === 'LONG'
+      ? quantity * (triggerPrice - entryPrice)
+      : quantity * (entryPrice - triggerPrice);
+  return Number.isFinite(raw) ? Number(raw.toFixed(2)) : null;
+}
+
+/**
+ * Gidiş-dönüş (açılış + kapanış piyasa taker) tahmini komisyon toplamını (USDT) döndürür.
+ */
+export function estimateRoundTripFeeUsd(params: {
+  quantity: number;
+  entryPrice: number;
+  triggerPrice: number;
+  openFeeRate: number;
+  closeMarketFeeRate: number;
+  fixedOpenFeeUsd?: number | null;
+}): number {
+  const { quantity, entryPrice, triggerPrice, openFeeRate, closeMarketFeeRate, fixedOpenFeeUsd } = params;
+  if (!(quantity > 0) || !(entryPrice > 0) || !(triggerPrice > 0)) return 0;
+  const openFee =
+    fixedOpenFeeUsd !== null && fixedOpenFeeUsd !== undefined && Number.isFinite(fixedOpenFeeUsd)
+      ? fixedOpenFeeUsd
+      : quantity * entryPrice * openFeeRate;
+  const closeFee = quantity * triggerPrice * closeMarketFeeRate;
+  return Number((openFee + closeFee).toFixed(2));
+}
+
+/**
+ * Komisyon dahil kullanılabilir bakiyeye sığan en yüksek teminat bütçesini döndürür.
+ */
+export function maxSafeMarginBudgetForAvailableBalance(
+  availableBalance: number | null,
+  leverage: number | null,
+  openFeeRate: number,
+): number | null {
+  if (
+    availableBalance === null ||
+    leverage === null ||
+    !(availableBalance > 0) ||
+    !(leverage >= 1)
+  ) {
+    return null;
+  }
+  const safe = availableBalance / (1 + leverage * Math.max(0, openFeeRate));
+  const floored = Math.floor(safe * 100) / 100;
+  return floored > 0 ? floored : 0;
 }

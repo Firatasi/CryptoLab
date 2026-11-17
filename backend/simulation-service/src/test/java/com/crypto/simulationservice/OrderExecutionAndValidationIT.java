@@ -57,6 +57,9 @@ class OrderExecutionAndValidationIT {
     SimulationMarketCatalog catalog;
 
     @Autowired
+    SimulationReportingService reportingService;
+
+    @Autowired
     ApiErrors apiErrors;
 
     @Autowired
@@ -244,6 +247,119 @@ class OrderExecutionAndValidationIT {
                 sessionController.updateBrackets(jwtFor(owner), posId, Map.of("stopLoss", unsafeSlBelowLiq.toPlainString()))
         );
         assertEquals("STOP_LOSS_PAST_LIQUIDATION", updateEx.getMessage());
+    }
+
+    @Test
+    @Transactional
+    @SuppressWarnings("unchecked")
+    void openingSameInstrumentPositionsViaMarketAndLimitKeepsAllOpenAndClosesOnlyTargetedPosition() {
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = createSession.execute(owner, new BigDecimal("10000"), RULE_PROFILE, RISK_POLICY_50X);
+        Jwt jwt = jwtFor(owner);
+        BigDecimal liveMark = catalog.fetchLiveMarkPrice(BTC_ID, new BigDecimal("68000.00")).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal sl1 = liveMark.multiply(new BigDecimal("0.92")).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal tp1 = liveMark.multiply(new BigDecimal("1.08")).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal sl2 = liveMark.multiply(new BigDecimal("0.93")).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal tp2 = liveMark.multiply(new BigDecimal("1.10")).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal updatedSl2 = liveMark.multiply(new BigDecimal("0.95")).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal updatedTp2 = liveMark.multiply(new BigDecimal("1.12")).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal limit3 = liveMark.multiply(new BigDecimal("1.02")).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal sl3 = liveMark.multiply(new BigDecimal("1.10")).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal tp3 = liveMark.multiply(new BigDecimal("0.85")).setScale(2, RoundingMode.HALF_UP);
+
+        // 1. Aynı enstrümanda (BTCUSDT) ilk LONG MARKET pozisyonu
+        UUID plan1 = seedConsumablePlan(
+                sessionId, BTC_ID, "MANUAL", "LONG", "MARKET",
+                liveMark, null, new BigDecimal("0.01"),
+                new BigDecimal("340.00"), new BigDecimal("0.27"),
+                new BigDecimal("2"), sl1, tp1
+        );
+        var acc1 = orderController.submit(jwt, "same-1-" + UUID.randomUUID(), new SubmitOrderRequest(
+                plan1, 1, readHash(plan1, 1)
+        )).getBody();
+        assertNotNull(acc1);
+        orderExecutionService.materializeCommandIfPending(acc1.commandId(), id -> Optional.of(liveMark));
+        UUID pos1Id = jdbc.queryForObject("SELECT position_id FROM orders WHERE command_id = ?", UUID.class, acc1.commandId());
+        assertNotNull(pos1Id);
+
+        // 2. Mevcut açık pozisyonu kapatmadan aynı enstrümanda ikinci LONG MARKET pozisyonu
+        UUID plan2 = seedConsumablePlan(
+                sessionId, BTC_ID, "MANUAL", "LONG", "MARKET",
+                liveMark, null, new BigDecimal("0.02"),
+                new BigDecimal("680.00"), new BigDecimal("0.54"),
+                new BigDecimal("2"), sl2, tp2
+        );
+        var acc2 = orderController.submit(jwt, "same-2-" + UUID.randomUUID(), new SubmitOrderRequest(
+                plan2, 1, readHash(plan2, 1)
+        )).getBody();
+        assertNotNull(acc2);
+        orderExecutionService.materializeCommandIfPending(acc2.commandId(), id -> Optional.of(liveMark));
+        UUID pos2Id = jdbc.queryForObject("SELECT position_id FROM orders WHERE command_id = ?", UUID.class, acc2.commandId());
+        assertNotNull(pos2Id);
+        assertNotEquals(pos1Id, pos2Id);
+
+        // 3. Aynı enstrümanda karşı yönlü SHORT LIMIT emri -> tetiklendiğinde önceki iki pozisyon da AÇIK kalmalı
+        UUID plan3 = seedConsumablePlan(
+                sessionId, BTC_ID, "MANUAL", "SHORT", "LIMIT",
+                limit3, limit3, new BigDecimal("0.015"),
+                new BigDecimal("517.50"), new BigDecimal("0.41"),
+                new BigDecimal("2"), sl3, tp3
+        );
+        var acc3 = orderController.submit(jwt, "same-3-" + UUID.randomUUID(), new SubmitOrderRequest(
+                plan3, 1, readHash(plan3, 1)
+        )).getBody();
+        assertNotNull(acc3);
+        orderExecutionService.materializeCommandIfPending(acc3.commandId(), id -> Optional.of(liveMark));
+        assertEquals("NEW", jdbc.queryForObject("SELECT status FROM orders WHERE command_id = ?", String.class, acc3.commandId()));
+
+        int filledLimit = orderExecutionService.matchOpenLimitOrders(sessionId, id -> Optional.of(limit3.add(new BigDecimal("10.00"))));
+        assertEquals(1, filledLimit);
+        UUID pos3Id = jdbc.queryForObject("SELECT position_id FROM orders WHERE command_id = ?", UUID.class, acc3.commandId());
+        assertNotNull(pos3Id);
+
+        // Üç pozisyonun da eşzamanlı AÇIK olduğunu ve kullanılabilir bakiyenin doğru korunduğunu doğrula
+        List<Map<String, Object>> openItems = (List<Map<String, Object>>) sessionController.listPositions(jwt, sessionId.toString()).get("items");
+        assertEquals(3, openItems.size());
+
+        BigDecimal availableAfterThree = jdbc.queryForObject(
+                "SELECT balance FROM wallet_accounts WHERE session_id = ? AND kind = 'AVAILABLE'",
+                BigDecimal.class, sessionId
+        );
+        assertEquals(0, new BigDecimal("8461.28").compareTo(availableAfterThree));
+
+        Map<String, Object> sessionView = sessionController.getSession(jwt, sessionId.toString());
+        assertEquals(3, sessionView.get("openPositionCount"));
+        assertEquals(0, new BigDecimal("1537.50").compareTo(new BigDecimal((String) sessionView.get("isolatedMargin"))));
+
+        // Yalnız 2. pozisyonun SL/TP seviyelerini güncelle; 1. ve 3. pozisyonlar etkilenmemeli
+        sessionController.updateBrackets(jwt, pos2Id, Map.of("stopLoss", updatedSl2.toPlainString(), "takeProfit", updatedTp2.toPlainString()));
+        assertEquals(0, sl1.compareTo(
+                jdbc.queryForObject("SELECT stop_loss FROM positions WHERE id = ?", BigDecimal.class, pos1Id)));
+        assertEquals(0, updatedSl2.compareTo(
+                jdbc.queryForObject("SELECT stop_loss FROM positions WHERE id = ?", BigDecimal.class, pos2Id)));
+        assertEquals(0, sl3.compareTo(
+                jdbc.queryForObject("SELECT stop_loss FROM positions WHERE id = ?", BigDecimal.class, pos3Id)));
+
+        // Yalnız 1. pozisyonu kapat -> diğer 2 BTCUSDT pozisyonu AÇIK kalmalı
+        sessionController.closePosition(jwt, pos1Id);
+        assertEquals("CLOSED", jdbc.queryForObject("SELECT state FROM positions WHERE id = ?", String.class, pos1Id));
+        assertEquals("OPEN", jdbc.queryForObject("SELECT state FROM positions WHERE id = ?", String.class, pos2Id));
+        assertEquals("OPEN", jdbc.queryForObject("SELECT state FROM positions WHERE id = ?", String.class, pos3Id));
+        List<Map<String, Object>> afterSingleClose = (List<Map<String, Object>>) sessionController.listPositions(jwt, sessionId.toString()).get("items");
+        assertEquals(2, afterSingleClose.size());
+
+        // Otomatik çıkış: updatedSl2 - 10 fiyatı yalnızca pos2 SL tetikler; pos3 (SHORT tp=0.85x) AÇIK kalır
+        BigDecimal triggerSl2 = updatedSl2.subtract(new BigDecimal("10.00"));
+        var autoEvents = reportingService.processAutomaticExits(
+                owner,
+                sessionId,
+                id -> Optional.of(triggerSl2),
+                clock.instant().plusSeconds(10)
+        );
+        assertEquals(1, autoEvents.size());
+        assertEquals(pos2Id, autoEvents.getFirst().positionId());
+        assertEquals("CLOSED", jdbc.queryForObject("SELECT state FROM positions WHERE id = ?", String.class, pos2Id));
+        assertEquals("OPEN", jdbc.queryForObject("SELECT state FROM positions WHERE id = ?", String.class, pos3Id));
     }
 
     private UUID seedConsumablePlan(

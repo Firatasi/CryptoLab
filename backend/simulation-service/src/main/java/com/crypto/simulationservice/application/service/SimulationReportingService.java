@@ -4,21 +4,30 @@ import com.crypto.financecore.finance.Decimal;
 import com.crypto.financecore.finance.Finance;
 import com.crypto.financecore.finance.MaintenanceTier;
 import com.crypto.financecore.finance.PositionSide;
+import com.crypto.simulationservice.application.service.SimulationMarketCatalog.HistoricalCandle;
+import com.crypto.simulationservice.application.service.SimulationMarketCatalog.HistoricalCandleProvider;
 import com.crypto.simulationservice.domain.exception.BusinessException;
 import com.crypto.simulationservice.domain.service.RiskDecision;
+import com.crypto.simulationservice.domain.service.replay.BarAmbiguity;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -116,8 +125,15 @@ public class SimulationReportingService {
             UUID ruleProfileId,
             BigDecimal openFee,
             BigDecimal settledFunding,
+            Instant openedAt,
             Instant deadlineAt,
             String expiryPolicy
+    ) {}
+
+    private record PlannedExit(
+            RiskDecision.Action action,
+            BigDecimal exitPrice,
+            Instant exitTime
     ) {}
 
     private record SessionRow(
@@ -127,18 +143,31 @@ public class SimulationReportingService {
             BigDecimal initialDeposit,
             long engineSequence,
             boolean deleted,
-            BigDecimal availableBalance
+            BigDecimal availableBalance,
+            BigDecimal reservedBalance
     ) {}
 
     private final JdbcTemplate jdbc;
     private final SimulationMarketCatalog catalog;
     private final Clock clock;
+    private final boolean historicalCatchUpEnabled;
     private volatile boolean tablesEnsured = false;
 
     public SimulationReportingService(JdbcTemplate jdbc, SimulationMarketCatalog catalog, Clock clock) {
+        this(jdbc, catalog, clock, true);
+    }
+
+    @Autowired
+    public SimulationReportingService(
+            JdbcTemplate jdbc,
+            SimulationMarketCatalog catalog,
+            Clock clock,
+            @Value("${simulation.liquidation.enabled:true}") boolean historicalCatchUpEnabled
+    ) {
         this.jdbc = jdbc;
         this.catalog = catalog;
         this.clock = clock;
+        this.historicalCatchUpEnabled = historicalCatchUpEnabled;
     }
 
     public void ensureTables() {
@@ -166,6 +195,14 @@ public class SimulationReportingService {
                     updated_at timestamptz NOT NULL DEFAULT now()
                 )
                 """);
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS position_monitor_state (
+                    position_id uuid PRIMARY KEY REFERENCES positions(id),
+                    last_evaluated_at timestamptz NOT NULL,
+                    updated_at timestamptz NOT NULL DEFAULT now()
+                )
+                """);
+        catalog.ensureSymbolTable();
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             tablesEnsured = true;
         }
@@ -225,7 +262,13 @@ public class SimulationReportingService {
             UUID sessionIdFilter,
             Instant now
     ) {
-        return processAutomaticExits(ownerId, sessionIdFilter, catalog::fetchLiveMarkPriceIfAvailable, now);
+        return processAutomaticExits(
+                ownerId,
+                sessionIdFilter,
+                catalog::fetchLiveMarkPriceIfAvailable,
+                historicalCatchUpEnabled ? catalog::fetchHistoricalCandles : null,
+                now
+        );
     }
 
     @Transactional
@@ -235,10 +278,44 @@ public class SimulationReportingService {
             Function<UUID, Optional<BigDecimal>> markPriceLookup,
             Instant now
     ) {
+        return processAutomaticExits(ownerId, sessionIdFilter, markPriceLookup, null, now);
+    }
+
+    @Transactional
+    public List<PositionExitEvent> processAutomaticExits(
+            UUID ownerId,
+            UUID sessionIdFilter,
+            Function<UUID, Optional<BigDecimal>> markPriceLookup,
+            @Nullable HistoricalCandleProvider historicalCandleProvider,
+            Instant now
+    ) {
         ensureTables();
         List<OpenPositionRow> candidates = fetchOpenPositions(ownerId, sessionIdFilter, null, null, false);
         if (candidates.isEmpty()) {
             return List.of();
+        }
+
+        Map<UUID, Instant> lastEvaluatedByPos = loadLastEvaluatedMap(candidates);
+        Map<String, Instant> earliestSymbolCatchUpFrom = new HashMap<>();
+        if (historicalCandleProvider != null) {
+            for (OpenPositionRow candidate : candidates) {
+                Instant cursorFrom = resolveEvaluationStart(candidate, lastEvaluatedByPos.get(candidate.positionId()), now);
+                if (needsHistoricalCatchUp(candidate, cursorFrom, now)) {
+                    Optional<String> symOpt = catalog.resolveKnownSymbol(candidate.instrumentId());
+                    if (symOpt.isPresent()) {
+                        String sym = symOpt.get();
+                        earliestSymbolCatchUpFrom.merge(sym, cursorFrom, (a, b) -> a.isBefore(b) ? a : b);
+                    }
+                }
+            }
+        }
+
+        Map<String, List<HistoricalCandle>> candlesBySymbol = new HashMap<>();
+        for (Map.Entry<String, Instant> entry : earliestSymbolCatchUpFrom.entrySet()) {
+            List<HistoricalCandle> bars = historicalCandleProvider.fetchCandles(
+                    entry.getKey(), null, entry.getValue(), now
+            );
+            candlesBySymbol.put(entry.getKey(), bars != null ? bars : List.of());
         }
 
         Map<UUID, Optional<BigDecimal>> resolvedMarks = new HashMap<>();
@@ -249,27 +326,28 @@ public class SimulationReportingService {
                     || candidate.entryPrice() == null || candidate.entryPrice().signum() <= 0) {
                 continue;
             }
-            Optional<BigDecimal> markOpt = resolvedMarks.computeIfAbsent(candidate.instrumentId(), markPriceLookup);
-            if (markOpt.isEmpty() || markOpt.get().signum() <= 0) {
-                continue;
-            }
-            BigDecimal markPrice = markOpt.get();
-            BigDecimal candidateMargin = candidate.margin() != null ? candidate.margin() : BigDecimal.ZERO;
-            RiskDecision.Action candidateAction = RiskDecision.onMark(
-                    PositionSide.valueOf(candidate.side()),
-                    candidate.q(),
-                    candidate.entryPrice(),
-                    markPrice,
-                    candidateMargin,
-                    candidate.stopLoss(),
-                    candidate.takeProfit(),
-                    DEFAULT_MAINTENANCE_TIERS
+            Instant cursorFrom = resolveEvaluationStart(candidate, lastEvaluatedByPos.get(candidate.positionId()), now);
+            Optional<String> knownSymbolOpt = catalog.resolveKnownSymbol(candidate.instrumentId());
+            List<HistoricalCandle> symbolBars = knownSymbolOpt
+                    .map(sym -> candlesBySymbol.getOrDefault(sym, List.of()))
+                    .orElse(List.of());
+
+            PlannedExit planned = evaluateCandidateExit(
+                    candidate, cursorFrom, symbolBars, markPriceLookup, resolvedMarks, now
             );
-            if (candidateAction == RiskDecision.Action.NONE
-                    && shouldTakeProfitAtDeadline(candidate, markPrice, now)) {
-                candidateAction = RiskDecision.Action.TAKE_PROFIT;
-            }
-            if (candidateAction == RiskDecision.Action.NONE) {
+            if (planned == null) {
+                if (symbolBars.isEmpty()) {
+                    maybeTightenProfitLockStopLoss(
+                            candidate,
+                            resolvedMarks.getOrDefault(candidate.instrumentId(), Optional.empty()).orElse(null)
+                    );
+                }
+                advanceMonitorStateIfObserved(
+                        candidate.positionId(),
+                        symbolBars,
+                        resolvedMarks.getOrDefault(candidate.instrumentId(), Optional.empty()).isPresent(),
+                        now
+                );
                 continue;
             }
 
@@ -284,46 +362,46 @@ public class SimulationReportingService {
                 continue;
             }
             OpenPositionRow locked = lockedList.getFirst();
-            BigDecimal lockedMargin = locked.margin() != null ? locked.margin() : BigDecimal.ZERO;
-            RiskDecision.Action lockedAction = RiskDecision.onMark(
-                    PositionSide.valueOf(locked.side()),
-                    locked.q(),
-                    locked.entryPrice(),
-                    markPrice,
-                    lockedMargin,
-                    locked.stopLoss(),
-                    locked.takeProfit(),
-                    DEFAULT_MAINTENANCE_TIERS
+            Instant lockedCursor = resolveEvaluationStart(locked, lastEvaluatedByPos.get(locked.positionId()), now);
+            PlannedExit lockedPlanned = evaluateCandidateExit(
+                    locked, lockedCursor, symbolBars, markPriceLookup, resolvedMarks, now
             );
-            if (lockedAction == RiskDecision.Action.NONE
-                    && shouldTakeProfitAtDeadline(locked, markPrice, now)) {
-                lockedAction = RiskDecision.Action.TAKE_PROFIT;
-            }
-            if (lockedAction == RiskDecision.Action.NONE) {
+            if (lockedPlanned == null) {
+                advanceMonitorStateIfObserved(
+                        locked.positionId(),
+                        symbolBars,
+                        resolvedMarks.getOrDefault(locked.instrumentId(), Optional.empty()).isPresent(),
+                        now
+                );
                 continue;
             }
 
-            boolean liquidated = lockedAction == RiskDecision.Action.LIQUIDATE;
+            boolean liquidated = lockedPlanned.action() == RiskDecision.Action.LIQUIDATE;
             BigDecimal feeRate = liquidated
                     ? DEFAULT_LIQUIDATION_FEE_RATE
                     : SimulationMarketCatalog.resolveTakerFeeRate(locked.ruleProfileId(), "MARKET");
 
-            SettlementOutcome outcome = settlePosition(locked, liquidated, markPrice, feeRate, now);
+            SettlementOutcome outcome = settlePosition(
+                    locked, liquidated, lockedPlanned.exitPrice(), feeRate, lockedPlanned.exitTime()
+            );
             if (outcome == null) {
                 continue;
             }
 
+            upsertMonitorState(locked.positionId(), lockedPlanned.exitTime());
+
             String cmdType = liquidated ? "LIQUIDATE_POSITION" : "CLOSE_POSITION";
-            String cmdReason = liquidated ? "AUTO_LIQUIDATION" : lockedAction.name();
+            String cmdReason = liquidated ? "AUTO_LIQUIDATION" : lockedPlanned.action().name();
             UUID commandId = UUID.randomUUID();
             jdbc.update("""
                     INSERT INTO commands(id, session_id, type, payload, status, reason, created_at, updated_at)
                     VALUES (?, ?, ?, '{}'::jsonb, 'FILLED', ?, ?, ?)
-                    """, commandId, locked.sessionId(), cmdType, cmdReason, Timestamp.from(now), Timestamp.from(now));
+                    """, commandId, locked.sessionId(), cmdType, cmdReason,
+                    Timestamp.from(lockedPlanned.exitTime()), Timestamp.from(lockedPlanned.exitTime()));
 
             AutoExitReason reason = liquidated
                     ? AutoExitReason.LIQUIDATED
-                    : (lockedAction == RiskDecision.Action.STOP_LOSS
+                    : (lockedPlanned.action() == RiskDecision.Action.STOP_LOSS
                             ? AutoExitReason.STOP_LOSS
                             : AutoExitReason.TAKE_PROFIT);
 
@@ -334,15 +412,278 @@ public class SimulationReportingService {
                     catalog.resolveSymbol(locked.instrumentId()),
                     locked.side(),
                     reason,
-                    markPrice,
+                    lockedPlanned.exitPrice(),
                     outcome.closingFee(),
                     outcome.insurance(),
                     outcome.realizedPnl(),
-                    now
+                    lockedPlanned.exitTime()
             ));
         }
 
         return exitEvents;
+    }
+
+    private static Instant resolveEvaluationStart(OpenPositionRow pos, @Nullable Instant lastEvaluatedAt, Instant now) {
+        Instant openedAt = pos.openedAt() != null ? pos.openedAt() : now;
+        if (lastEvaluatedAt != null && lastEvaluatedAt.isAfter(openedAt)) {
+            return lastEvaluatedAt;
+        }
+        return openedAt;
+    }
+
+    private static boolean needsHistoricalCatchUp(OpenPositionRow pos, Instant cursorFrom, Instant now) {
+        if (!now.isAfter(cursorFrom)) {
+            return false;
+        }
+        long offlineGapSeconds = Duration.between(cursorFrom, now).getSeconds();
+        if (offlineGapSeconds > 90L) {
+            return true;
+        }
+        Instant openedAt = pos.openedAt() != null ? pos.openedAt() : now;
+        return pos.deadlineAt() != null
+                && !now.isBefore(pos.deadlineAt())
+                && Duration.between(openedAt, now).getSeconds() > 30L
+                && !cursorFrom.isAfter(pos.deadlineAt());
+    }
+
+    private PlannedExit evaluateCandidateExit(
+            OpenPositionRow pos,
+            Instant cursorFrom,
+            List<HistoricalCandle> symbolBars,
+            Function<UUID, Optional<BigDecimal>> markPriceLookup,
+            Map<UUID, Optional<BigDecimal>> resolvedMarks,
+            Instant now
+    ) {
+        if (symbolBars != null && !symbolBars.isEmpty()) {
+            PlannedExit historicalHit = evaluateHistoricalBars(pos, symbolBars, cursorFrom);
+            if (historicalHit != null) {
+                return historicalHit;
+            }
+        }
+
+        Optional<BigDecimal> markOpt = resolvedMarks.computeIfAbsent(pos.instrumentId(), markPriceLookup);
+        if (markOpt.isEmpty() || markOpt.get().signum() <= 0) {
+            return null;
+        }
+        BigDecimal markPrice = markOpt.get();
+        BigDecimal margin = pos.margin() != null ? pos.margin() : BigDecimal.ZERO;
+        RiskDecision.Action action = RiskDecision.onMark(
+                PositionSide.valueOf(pos.side()),
+                pos.q(),
+                pos.entryPrice(),
+                markPrice,
+                margin,
+                pos.stopLoss(),
+                pos.takeProfit(),
+                DEFAULT_MAINTENANCE_TIERS
+        );
+        if (action == RiskDecision.Action.NONE
+                && shouldTakeProfitAtDeadline(pos, markPrice, now)) {
+            action = RiskDecision.Action.TAKE_PROFIT;
+        }
+        return action == RiskDecision.Action.NONE ? null : new PlannedExit(action, markPrice, now);
+    }
+
+    /**
+     * Kâra geçmiş ve hem SL hem TP tanımlı açık pozisyonlarda:
+     * - TP yolunun %55'ine ulaşıldığında stop_loss'u giriş + gidiş-dönüş komisyon maliyetinin üzerine (net kârlı başabaş),
+     * - TP yolunun %78'ine ulaşıldığında TP mesafesinin %40'ını kilitleyen trailing stop seviyesine taşır.
+     */
+    private void maybeTightenProfitLockStopLoss(OpenPositionRow pos, @Nullable BigDecimal markPrice) {
+        if (markPrice == null || markPrice.signum() <= 0
+                || pos.entryPrice() == null || pos.entryPrice().signum() <= 0
+                || pos.stopLoss() == null || pos.stopLoss().signum() <= 0
+                || pos.takeProfit() == null || pos.takeProfit().signum() <= 0) {
+            return;
+        }
+        boolean isLong = "LONG".equals(pos.side());
+        BigDecimal entry = pos.entryPrice();
+        BigDecimal tp = pos.takeProfit();
+        BigDecimal currentSl = pos.stopLoss();
+
+        BigDecimal targetDist = isLong ? tp.subtract(entry) : entry.subtract(tp);
+        if (targetDist.signum() <= 0) {
+            return;
+        }
+        BigDecimal favorableMove = isLong ? markPrice.subtract(entry) : entry.subtract(markPrice);
+        if (favorableMove.signum() <= 0) {
+            return;
+        }
+
+        BigDecimal progress = favorableMove.divide(targetDist, Decimal.MC);
+        if (progress.compareTo(new BigDecimal("0.55")) < 0) {
+            return;
+        }
+
+        BigDecimal closeFeeRate = SimulationMarketCatalog.resolveTakerFeeRate(pos.ruleProfileId(), "MARKET");
+        BigDecimal notional = pos.q().multiply(entry, Decimal.MC);
+        BigDecimal actualOpenRate = (pos.openFee() != null && pos.openFee().signum() > 0 && notional.signum() > 0)
+                ? pos.openFee().divide(notional, Decimal.MC)
+                : closeFeeRate;
+        BigDecimal beOffsetRate = actualOpenRate.add(closeFeeRate).add(new BigDecimal("0.0003"))
+                .max(new BigDecimal("0.0010"));
+
+        BigDecimal breakEvenSl = isLong
+                ? entry.multiply(BigDecimal.ONE.add(beOffsetRate))
+                : entry.multiply(BigDecimal.ONE.subtract(beOffsetRate));
+
+        BigDecimal candidateSl = breakEvenSl;
+        if (progress.compareTo(new BigDecimal("0.78")) >= 0) {
+            BigDecimal lockDist = targetDist.multiply(new BigDecimal("0.40"), Decimal.MC);
+            BigDecimal trailSl = isLong ? entry.add(lockDist) : entry.subtract(lockDist);
+            boolean trailStrictlyBetter = isLong
+                    ? trailSl.compareTo(breakEvenSl) > 0
+                    : trailSl.compareTo(breakEvenSl) < 0;
+            if (trailStrictlyBetter) {
+                candidateSl = trailSl;
+            }
+        }
+
+        int scale = Math.min(8, Math.max(4, Math.max(entry.scale(), currentSl.scale())));
+        BigDecimal roundedSl = candidateSl.setScale(scale, RoundingMode.HALF_UP);
+        boolean improvesAndSafe = isLong
+                ? (roundedSl.compareTo(currentSl) > 0
+                        && roundedSl.compareTo(markPrice) < 0
+                        && roundedSl.compareTo(tp) < 0)
+                : (roundedSl.compareTo(currentSl) < 0
+                        && roundedSl.compareTo(markPrice) > 0
+                        && roundedSl.compareTo(tp) > 0);
+        if (!improvesAndSafe) {
+            return;
+        }
+
+        jdbc.update("""
+                UPDATE positions
+                SET stop_loss = ?, version = version + 1
+                WHERE id = ? AND state IN ('OPEN', 'LIQUIDATING')
+                  AND (
+                        (side = 'LONG' AND stop_loss IS NOT NULL AND stop_loss < ?)
+                     OR (side = 'SHORT' AND stop_loss IS NOT NULL AND stop_loss > ?)
+                  )
+                """, roundedSl, pos.positionId(), roundedSl, roundedSl);
+    }
+
+    private static PlannedExit evaluateHistoricalBars(
+            OpenPositionRow pos,
+            List<HistoricalCandle> bars,
+            Instant cursorFrom
+    ) {
+        PositionSide side = PositionSide.valueOf(pos.side());
+        boolean isLong = side == PositionSide.LONG;
+        BigDecimal margin = pos.margin() != null ? pos.margin() : BigDecimal.ZERO;
+        BigDecimal validStop = pos.stopLoss() != null && pos.stopLoss().signum() > 0 ? pos.stopLoss() : null;
+        BigDecimal validTarget = pos.takeProfit() != null && pos.takeProfit().signum() > 0 ? pos.takeProfit() : null;
+        Instant openedAt = pos.openedAt() != null ? pos.openedAt() : cursorFrom;
+
+        for (HistoricalCandle bar : bars) {
+            if (!bar.closed() || !bar.closeTime().isAfter(cursorFrom)) {
+                continue;
+            }
+            if (bar.openTime().isBefore(openedAt)) {
+                // Giriş mumunun pozisyon açılmadan önceki saniyelerindeki fitili taramayız; yalnızca mum kapanışını kontrol ederiz.
+                RiskDecision.Action closeAction = RiskDecision.onMark(
+                        side, pos.q(), pos.entryPrice(), bar.close(), margin, validStop, validTarget, DEFAULT_MAINTENANCE_TIERS
+                );
+                if (closeAction != RiskDecision.Action.NONE) {
+                    return new PlannedExit(closeAction, bar.close(), bar.closeTime());
+                }
+                if (shouldTakeProfitAtDeadline(pos, bar.close(), bar.closeTime())) {
+                    return new PlannedExit(RiskDecision.Action.TAKE_PROFIT, bar.close(), bar.closeTime());
+                }
+                continue;
+            }
+
+            BigDecimal adverse = isLong ? bar.low() : bar.high();
+            if (Finance.liquidates(side, pos.q(), pos.entryPrice(), adverse, margin, DEFAULT_MAINTENANCE_TIERS)) {
+                BigDecimal liqPrice = Finance.liquidation(
+                        side, pos.q(), pos.entryPrice(), margin, DEFAULT_MAINTENANCE_TIERS
+                ).orElse(adverse);
+                BigDecimal exitPrice = isLong
+                        ? (bar.open().compareTo(liqPrice) < 0 ? bar.open() : liqPrice)
+                        : (bar.open().compareTo(liqPrice) > 0 ? bar.open() : liqPrice);
+                exitPrice = exitPrice.max(bar.low()).min(bar.high());
+                return new PlannedExit(RiskDecision.Action.LIQUIDATE, exitPrice, bar.closeTime());
+            }
+
+            BarAmbiguity.Trigger trigger = BarAmbiguity.bracket(side, bar.low(), bar.high(), validStop, validTarget);
+            if ("STOP_LOSS".equals(trigger.reason()) && validStop != null) {
+                BigDecimal fillPrice = isLong
+                        ? (bar.open().compareTo(validStop) <= 0 ? bar.open() : validStop)
+                        : (bar.open().compareTo(validStop) >= 0 ? bar.open() : validStop);
+                fillPrice = fillPrice.max(bar.low()).min(bar.high());
+                return new PlannedExit(RiskDecision.Action.STOP_LOSS, fillPrice, bar.closeTime());
+            }
+            if ("TAKE_PROFIT".equals(trigger.reason()) && validTarget != null) {
+                BigDecimal fillPrice = isLong
+                        ? (bar.open().compareTo(validTarget) >= 0 ? bar.open() : validTarget)
+                        : (bar.open().compareTo(validTarget) <= 0 ? bar.open() : validTarget);
+                fillPrice = fillPrice.max(bar.low()).min(bar.high());
+                return new PlannedExit(RiskDecision.Action.TAKE_PROFIT, fillPrice, bar.closeTime());
+            }
+
+            if (shouldTakeProfitAtDeadline(pos, bar.close(), bar.closeTime())) {
+                return new PlannedExit(RiskDecision.Action.TAKE_PROFIT, bar.close(), bar.closeTime());
+            }
+        }
+        return null;
+    }
+
+    private Map<UUID, Instant> loadLastEvaluatedMap(List<OpenPositionRow> candidates) {
+        Map<UUID, Instant> map = new HashMap<>();
+        if (candidates.isEmpty()) {
+            return map;
+        }
+        List<String> placeholders = new ArrayList<>(candidates.size());
+        List<Object> params = new ArrayList<>(candidates.size());
+        for (OpenPositionRow c : candidates) {
+            placeholders.add("?");
+            params.add(c.positionId());
+        }
+        String sql = "SELECT position_id, last_evaluated_at FROM position_monitor_state WHERE position_id IN ("
+                + String.join(",", placeholders) + ")";
+        jdbc.query(sql, rs -> {
+            UUID pid = rs.getObject("position_id", UUID.class);
+            Timestamp ts = rs.getTimestamp("last_evaluated_at");
+            if (pid != null && ts != null) {
+                map.put(pid, ts.toInstant());
+            }
+        }, params.toArray());
+        return map;
+    }
+
+    private void advanceMonitorStateIfObserved(
+            UUID positionId,
+            List<HistoricalCandle> symbolBars,
+            boolean liveMarkObserved,
+            Instant now
+    ) {
+        Instant observedAt = null;
+        if (liveMarkObserved) {
+            observedAt = now;
+        } else if (symbolBars != null && !symbolBars.isEmpty()) {
+            for (int i = symbolBars.size() - 1; i >= 0; i--) {
+                if (symbolBars.get(i).closed()) {
+                    observedAt = symbolBars.get(i).closeTime();
+                    break;
+                }
+            }
+        }
+        if (observedAt != null) {
+            upsertMonitorState(positionId, observedAt);
+        }
+    }
+
+    private void upsertMonitorState(UUID positionId, Instant observedAt) {
+        if (positionId == null || observedAt == null) {
+            return;
+        }
+        jdbc.update("""
+                INSERT INTO position_monitor_state(position_id, last_evaluated_at, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (position_id) DO UPDATE SET
+                    last_evaluated_at = EXCLUDED.last_evaluated_at,
+                    updated_at = EXCLUDED.updated_at
+                """, positionId, Timestamp.from(observedAt), Timestamp.from(observedAt));
     }
 
     private List<OpenPositionRow> fetchOpenPositions(
@@ -363,6 +704,7 @@ public class SimulationReportingService {
                     p.initial_margin_remaining,
                     p.stop_loss,
                     p.take_profit,
+                    p.opened_at,
                     p.deadline_at,
                     p.expiry_policy,
                     s.rule_profile_id,
@@ -424,6 +766,7 @@ public class SimulationReportingService {
                         rs.getObject("rule_profile_id", UUID.class),
                         rs.getBigDecimal("open_fee"),
                         rs.getBigDecimal("settled_funding"),
+                        rs.getTimestamp("opened_at") != null ? rs.getTimestamp("opened_at").toInstant() : null,
                         rs.getTimestamp("deadline_at") != null ? rs.getTimestamp("deadline_at").toInstant() : null,
                         rs.getString("expiry_policy")
                 ),
@@ -548,7 +891,8 @@ public class SimulationReportingService {
     @Transactional
     public ReportingSnapshot snapshotForOwner(UUID ownerId, UUID sessionIdFilter) {
         ensureTables();
-        processAutomaticExits(ownerId, sessionIdFilter, catalog::fetchLiveMarkPriceIfAvailable, clock.instant());
+        HistoricalCandleProvider catchUpProvider = historicalCatchUpEnabled ? catalog::fetchHistoricalCandles : null;
+        processAutomaticExits(ownerId, sessionIdFilter, catalog::fetchLiveMarkPriceIfAvailable, catchUpProvider, clock.instant());
         var sql = new StringBuilder("""
                 SELECT
                     s.id,
@@ -562,7 +906,12 @@ public class SimulationReportingService {
                         FROM wallet_accounts w
                         WHERE w.session_id = s.id AND w.kind = 'AVAILABLE'
                         LIMIT 1
-                    ), s.initial_deposit) AS available_balance
+                    ), s.initial_deposit) AS available_balance,
+                    COALESCE((
+                        SELECT SUM(o.reserved_amount)
+                        FROM orders o
+                        WHERE o.session_id = s.id AND o.status = 'NEW'
+                    ), 0) AS reserved_balance
                 FROM simulation_sessions s
                 LEFT JOIN session_metadata m ON m.session_id = s.id
                 WHERE s.owner_id = ?
@@ -585,7 +934,8 @@ public class SimulationReportingService {
                         rs.getBigDecimal("initial_deposit"),
                         rs.getLong("engine_sequence"),
                         rs.getBoolean("is_deleted"),
-                        rs.getBigDecimal("available_balance")
+                        rs.getBigDecimal("available_balance"),
+                        rs.getBigDecimal("reserved_balance")
                 ),
                 params.toArray()
         );
@@ -734,7 +1084,8 @@ public class SimulationReportingService {
             BigDecimal isolated = isolatedBySession.getOrDefault(row.sessionId(), BigDecimal.ZERO);
             BigDecimal unreal = unrealizedBySession.getOrDefault(row.sessionId(), BigDecimal.ZERO);
             BigDecimal available = row.availableBalance() != null ? row.availableBalance() : row.initialDeposit();
-            BigDecimal equity = available.add(isolated).add(unreal);
+            BigDecimal reserved = row.reservedBalance() != null ? row.reservedBalance() : BigDecimal.ZERO;
+            BigDecimal equity = available.add(isolated).add(reserved).add(unreal);
             sessions.add(new SessionSnapshot(
                     row.sessionId(),
                     row.ownerId(),

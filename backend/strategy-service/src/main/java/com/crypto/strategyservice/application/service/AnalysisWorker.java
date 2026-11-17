@@ -14,6 +14,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -227,6 +228,8 @@ public class AnalysisWorker {
 
         NumericPolicy.Outcome outcome;
         String effectiveRisk = null;
+        SessionContextReader.SessionRiskProfile riskProfile = null;
+        int instMaxLev = 125;
         if (useLegacyPolicy) {
             outcome = NumericPolicy.evaluate(
                     prediction,
@@ -237,9 +240,8 @@ public class AnalysisWorker {
                     session.estimatedRoundTripCost()
             );
         } else {
-            SessionContextReader.SessionRiskProfile riskProfile =
-                    sessionContextReader.findSessionRiskProfile(job.ownerId(), job.sessionId());
-            int instMaxLev = marketCoveragePort.maxLeverageForInstrument(job.instrumentId());
+            riskProfile = sessionContextReader.findSessionRiskProfile(job.ownerId(), job.sessionId());
+            instMaxLev = marketCoveragePort.maxLeverageForInstrument(job.instrumentId());
             effectiveRisk = (job.riskLevel() == null || job.riskLevel().isBlank() || "AUTO".equalsIgnoreCase(job.riskLevel()))
                     ? AdaptiveNumericPolicy.riskLevelFromPolicyId(riskProfile.riskPolicyId())
                     : job.riskLevel();
@@ -263,7 +265,10 @@ public class AnalysisWorker {
                     job.horizonSeconds(),
                     market.referencePrice(),
                     market.verifiedAtr(),
-                    effectiveRisk
+                    effectiveRisk,
+                    riskProfile.maxLeverage(),
+                    instMaxLev,
+                    session.estimatedRoundTripCost()
             );
             transactions.completePolicyWait(job, prediction, outcome.reason(), waitSummary, clock.instant());
             return true;
@@ -316,10 +321,18 @@ public class AnalysisWorker {
             );
         }
 
+        PullbackEntry pullbackEntry = resolvePullbackEntry(
+                useLegacyPolicy,
+                job.horizonSeconds(),
+                outcome,
+                finalReasons,
+                market.referencePrice(),
+                market.verifiedAtr()
+        );
         var intent = new AnalysisJobRepository.ProposalIntent(
                 outcome.action(),
-                "MARKET",
-                null,
+                pullbackEntry.orderType(),
+                pullbackEntry.limitPrice(),
                 outcome.stopLoss(),
                 outcome.takeProfit(),
                 outcome.suggestedLeverage(),
@@ -341,6 +354,69 @@ public class AnalysisWorker {
 
         transactions.completeProposal(job, prediction, draft, clock.instant());
         return true;
+    }
+
+    private record PullbackEntry(String orderType, BigDecimal limitPrice) {
+    }
+
+    private static PullbackEntry resolvePullbackEntry(
+            boolean useLegacyPolicy,
+            int horizonSeconds,
+            NumericPolicy.Outcome outcome,
+            List<String> reasons,
+            BigDecimal referencePrice,
+            BigDecimal verifiedAtr
+    ) {
+        if (useLegacyPolicy
+                || !"QUANT_ADAPTIVE_POLICY".equals(outcome.reason())
+                || horizonSeconds < 900
+                || referencePrice == null || referencePrice.signum() <= 0
+                || verifiedAtr == null || verifiedAtr.signum() <= 0
+                || outcome.stopLoss() == null || outcome.takeProfit() == null) {
+            return new PullbackEntry("MARKET", null);
+        }
+        if (reasons.contains("SQUEEZE_BREAKOUT_SETUP")
+                || reasons.contains("TREND_MOMENTUM_ALIGNED")
+                || reasons.contains("IMPULSE_MOMENTUM_ALIGNED")) {
+            return new PullbackEntry("MARKET", null);
+        }
+
+        double ref = referencePrice.doubleValue();
+        double atrFrac = verifiedAtr.doubleValue() / ref;
+        double pullbackFrac = Math.max(0.0005, Math.min(0.0018, atrFrac * 0.14));
+        boolean isLong = "LONG".equals(outcome.action());
+        BigDecimal rawLimit = isLong
+                ? referencePrice.multiply(BigDecimal.valueOf(1.0 - pullbackFrac))
+                : referencePrice.multiply(BigDecimal.valueOf(1.0 + pullbackFrac));
+
+        BigDecimal tickSize = inferSimulationTickSize(referencePrice);
+        RoundingMode tickRound = isLong ? RoundingMode.FLOOR : RoundingMode.CEILING;
+        BigDecimal alignedLimit = rawLimit.divide(tickSize, 0, tickRound).multiply(tickSize).stripTrailingZeros();
+        if (alignedLimit.scale() < 0) {
+            alignedLimit = alignedLimit.setScale(0, RoundingMode.UNNECESSARY);
+        }
+
+        boolean strictlyBetterAndValid = isLong
+                ? (alignedLimit.compareTo(referencePrice) < 0
+                        && alignedLimit.compareTo(outcome.stopLoss()) > 0
+                        && alignedLimit.compareTo(outcome.takeProfit()) < 0)
+                : (alignedLimit.compareTo(referencePrice) > 0
+                        && alignedLimit.compareTo(outcome.stopLoss()) < 0
+                        && alignedLimit.compareTo(outcome.takeProfit()) > 0);
+        if (!strictlyBetterAndValid) {
+            return new PullbackEntry("MARKET", null);
+        }
+        return new PullbackEntry("LIMIT", alignedLimit);
+    }
+
+    private static BigDecimal inferSimulationTickSize(BigDecimal price) {
+        if (price.compareTo(new BigDecimal("100")) >= 0) {
+            return new BigDecimal("0.01");
+        }
+        if (price.compareTo(BigDecimal.ONE) >= 0) {
+            return new BigDecimal("0.001");
+        }
+        return new BigDecimal("0.00001");
     }
 }
 

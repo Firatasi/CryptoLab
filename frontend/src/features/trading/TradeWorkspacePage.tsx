@@ -486,6 +486,7 @@ export function TradeWorkspacePage() {
             sessionId={effectiveSessionId}
             instrument={selectedInstrument}
             sessionStatus={sessionQuery.data?.status ?? 'RUNNING'}
+            sessionRuleProfileId={sessionQuery.data?.ruleProfileId ?? null}
             sessionRiskPolicyId={sessionQuery.data?.riskPolicyId ?? null}
             availableBalance={sessionQuery.data?.availableBalance ?? null}
             marketSnapshot={quoteQuery.data ?? null}

@@ -491,6 +491,8 @@ class StrategyFlowTest {
         );
         assertTrue(waitSummary.contains("Düşüş (SHORT) Eğilimi"));
         assertTrue(waitSummary.contains("Yüksek (Maks. Kâr)"));
+        assertTrue(waitSummary.contains("Önerilen Kaldıraç:"));
+        assertTrue(waitSummary.contains("İzleme Referans Bandı -> SL:"));
         assertFalse(waitSummary.contains("CHOPPY_MARKET_WAIT"));
         assertFalse(waitSummary.contains("QUANT_MODEL_V3"));
 
@@ -524,5 +526,43 @@ class StrategyFlowTest {
         assertEquals("QUANT_ADAPTIVE_POLICY", v4Med.reason());
         assertTrue(v4Med.suggestedLeverage().compareTo(BigDecimal.ONE) > 0);
         assertTrue(v4Med.suggestedLeverage().compareTo(new BigDecimal("20")) <= 0);
+
+        // Positive R:R ve komisyon korumasi: TP mesafesi SL mesafesinden en az %45 daha genis ve maliyetin 3.8x ustunde olmali
+        double v4SlPct = (3400.0 - v4Med.stopLoss().doubleValue()) / 3400.0;
+        double v4TpPct = (v4Med.takeProfit().doubleValue() - 3400.0) / 3400.0;
+        assertTrue(v4TpPct >= v4SlPct * 1.44, "V4 TP distance must exceed SL distance (positive R:R)");
+        assertTrue(v4TpPct >= 0.0012 * 3.80, "V4 TP must comfortably exceed 3.8x round-trip cost");
+
+        // Negatif net beklenti veya zayif guven -> V4 kesin WAIT donmeli (dusuk kaliteli islem acmamali)
+        PredictionResult lowEvV4 = new PredictionResult(
+                REQUEST_ID,
+                PredictionResult.Quality.READY,
+                List.of("QUANT_MODEL_V4", "HTF_TREND_CONFIRMED"),
+                BUNDLE_ID,
+                "features-quant-v4",
+                SCHEMA_HASH,
+                SNAPSHOT_ID,
+                AS_OF,
+                3600,
+                0.015,
+                0.009,
+                "walkforward-gbdt-triple-barrier-v4-h3600",
+                Map.of("signalConfidence", 0.68, "barrierEvR", -0.05, "efficiencyRatio", 0.40, "regime", "TREND_UP"),
+                3
+        );
+        var lowEvWait = AdaptiveNumericPolicy.evaluateAdaptive(
+                lowEvV4, null, new BigDecimal("3400"), new BigDecimal("26"), 1.0, 0.0012, "HIGH", 20, 100
+        );
+        assertEquals("WAIT", lowEvWait.action());
+        assertEquals("NEGATIVE_NET_EXPECTANCY", lowEvWait.reason());
+
+        // VIP komisyon profili maliyeti Standart profilden dusuk hesaplanmali
+        assertTrue(
+                com.crypto.strategyservice.infrastructure.client.HttpSessionContextReader.resolveRoundTripCost(
+                        UUID.fromString("88888888-8888-4888-8888-888888888889")
+                ) < com.crypto.strategyservice.infrastructure.client.HttpSessionContextReader.resolveRoundTripCost(
+                        UUID.fromString("88888888-8888-4888-8888-888888888888")
+                )
+        );
     }
 }

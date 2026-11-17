@@ -40,7 +40,7 @@ export function App() {
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <RouterProvider router={router} />
+          <RouterProvider router={router} future={{ v7_startTransition: true }} />
         </AuthProvider>
       </QueryClientProvider>
     </ErrorBoundary>

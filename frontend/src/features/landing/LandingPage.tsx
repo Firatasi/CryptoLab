@@ -418,18 +418,6 @@ export function LandingPage() {
               <div className="space-y-4 border-t border-[#e5e5e5] pt-6 text-xs">
                 <div className="flex flex-col gap-1 border border-[#e5e5e5] p-4">
                   <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-[#737373]">
-                    ARAŞTIRMA &amp; AKADEMİK İŞBİRLİĞİ
-                  </span>
-                  <span className="font-mono text-sm font-semibold text-[#0a0a0a]">
-                    research@cryptolab.dev
-                  </span>
-                  <span className="text-[#525252]">
-                    Üniversite laboratuvarları, tez çalışmaları ve veri seti talepleri.
-                  </span>
-                </div>
-
-                <div className="flex flex-col gap-1 border border-[#e5e5e5] p-4">
-                  <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-[#737373]">
                     TEKNİK DESTEK &amp; SİSTEM OPERASYONU
                   </span>
                   <span className="font-mono text-sm font-semibold text-[#0a0a0a]">

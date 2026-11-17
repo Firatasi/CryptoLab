@@ -250,7 +250,7 @@ describe('3. Emir Bileti, Sunucu ExecutionPlan Onayı ve Strict Submit Sözleşm
 });
 
 describe('4. AI Analiz: WAIT vs FAILED Ayrımı ve Şablon (TEMPLATE) Dürüstlüğü', () => {
-  it('WAIT kararında emir önerisi veya emir gönderme butonu ASLA göstermez ve TEMPLATE rozetini açıkça etiketler', async () => {
+  it('WAIT kararında bekleme butonunu, TEMPLATE rozetini ve kullanıcı tercihine bırakılan aktarılabilir aday emir önerisini gösterir (otomatik emir göndermez)', async () => {
     const user = userEvent.setup();
     setAccessToken(TEST_TOKENS.user);
     renderWithAppRouter(['/analysis/sess-1']);
@@ -268,7 +268,10 @@ describe('4. AI Analiz: WAIT vs FAILED Ayrımı ve Şablon (TEMPLATE) Dürüstl�
     expect(
       screen.getByText(/ŞABLON AÇIKLAMA \(TEMPLATE/i),
     ).toBeInTheDocument();
-    expect(screen.queryByTestId('transfer-proposal-btn')).not.toBeInTheDocument();
+    expect(screen.getByTestId('wait-hold-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-proposal-suggestion-card')).toBeInTheDocument();
+    expect(screen.getByTestId('transfer-proposal-btn')).toBeInTheDocument();
+    expect(screen.queryByTestId('execution-plan-card')).not.toBeInTheDocument();
   });
 
   it('FAILED / MODEL_UNAVAILABLE teknik hatasını ekonomik WAIT kararı olarak göstermez', async () => {

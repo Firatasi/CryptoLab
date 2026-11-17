@@ -472,6 +472,82 @@ class StrategyB09IT {
         assertEquals(250, page2.candidates().size());
     }
 
+    @Test
+    void quantAdaptivePolicyProducesPullbackLimitOnNonBreakoutH15mAndPositiveRewardToRisk() {
+        UUID ownerId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        UUID instrumentId = UUID.randomUUID();
+
+        marketCoverage.givenEvaluation(instrumentId, new MarketCoveragePort.MarketEvaluation(
+                UUID.randomUUID(),
+                FEATURE_SNAPSHOT_ID,
+                BASE_TIME,
+                1.0,
+                new BigDecimal("68000.00"),
+                new BigDecimal("420.00"),
+                true
+        ));
+
+        ModelClient v4Model = new ModelClient() {
+            @Override
+            public Bundle activeBundle(int horizonSeconds) {
+                return new Bundle(BUNDLE_V2, "features-quant-v4", SCHEMA_HASH, List.of(900), "ACTIVE");
+            }
+
+            @Override
+            public PredictionResult predict(Request r) {
+                return new PredictionResult(
+                        r.requestId(),
+                        PredictionResult.Quality.READY,
+                        List.of("QUANT_MODEL_V4", "HTF_TREND_CONFIRMED", "ORDER_FLOW_CONFIRMED"),
+                        r.modelBundleId(),
+                        r.featureVersion(),
+                        SCHEMA_HASH,
+                        FEATURE_SNAPSHOT_ID,
+                        r.asOf(),
+                        r.horizonSeconds(),
+                        0.012,
+                        0.007,
+                        "walkforward-sym-ensemble-v4-h900",
+                        Map.of(
+                                "signalConfidence", 0.72,
+                                "efficiencyRatio", 0.52,
+                                "barrierEvR", 0.18,
+                                "volRegimeRatio", 1.05,
+                                "regime", "TREND_UP"
+                        ),
+                        3
+                );
+            }
+        };
+
+        AnalysisWorker adaptiveWorker = new AnalysisWorker(
+                transactions,
+                v4Model,
+                sessionReader,
+                marketCoverage,
+                explanationClient,
+                clock,
+                30L,
+                60L,
+                "quant-adaptive-v2"
+        );
+        UUID jobId = adaptiveWorker.enqueue(ownerId, sessionId, instrumentId, 900, BASE_TIME, "idem-pullback-1", "MEDIUM");
+        assertTrue(adaptiveWorker.processNext());
+
+        var view = transactions.findJobView(ownerId, jobId).orElseThrow();
+        assertEquals("SUCCEEDED", view.status());
+        assertEquals("LONG", view.action());
+        var proposal = transactions.findProposalView(ownerId, view.proposalId(), 1).orElseThrow();
+        assertEquals("LIMIT", proposal.intent().orderType());
+        assertNotNull(proposal.intent().limitPrice());
+        assertTrue(proposal.intent().limitPrice().compareTo(new BigDecimal("68000.00")) < 0);
+        assertTrue(proposal.intent().stopLoss().compareTo(proposal.intent().limitPrice()) < 0);
+        assertTrue(proposal.intent().takeProfit().compareTo(new BigDecimal("68000.00")) > 0);
+        // 0.01 USDT tick adimiyla tam hizali olmali
+        assertEquals(0, proposal.intent().limitPrice().remainder(new BigDecimal("0.01")).compareTo(BigDecimal.ZERO));
+    }
+
     private AnalysisWorker workerWithModel(ModelClient model) {
         return new AnalysisWorker(
                 transactions,

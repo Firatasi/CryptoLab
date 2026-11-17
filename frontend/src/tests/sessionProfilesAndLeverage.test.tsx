@@ -213,6 +213,21 @@ describe('Oturum Komisyon & Risk Profilleri ve 50x Kaldıraç Desteği', () => {
 
     let capturedPreviewBody: ManualPreviewRequest | null = null;
     server.use(
+      http.get('/api/v1/market/quotes', () =>
+        HttpResponse.json({
+          symbol: 'BTCUSDT',
+          bid: '70399.50',
+          ask: '70400.50',
+          markPrice: '70400.00',
+          indexPrice: '70400.00',
+          lastPrice: '70400.00',
+          volume24h: '12450.00',
+          change24hPercent: '1.25',
+          asOf: new Date().toISOString(),
+          stale: false,
+          source: 'MOCK',
+        }),
+      ),
       http.get('/api/v1/market/instruments', () =>
         HttpResponse.json({
           items: canonicalInstruments.map((item) =>

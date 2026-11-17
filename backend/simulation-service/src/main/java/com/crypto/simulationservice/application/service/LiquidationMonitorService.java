@@ -9,6 +9,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -53,6 +55,18 @@ public class LiquidationMonitorService {
         this.orderExecutionService = orderExecutionService;
     }
 
+    @EventListener(ApplicationReadyEvent.class)
+    public void onApplicationReady() {
+        if (!enabled) {
+            return;
+        }
+        try {
+            sweepOpenPositions();
+        } catch (Exception ex) {
+            log.warn("Startup offline catch-up deferred: {}", ex.getMessage());
+        }
+    }
+
     @Scheduled(fixedDelayString = "${simulation.liquidation.poll-ms:1000}")
     public void sweepOpenPositions() {
         if (!enabled) {
@@ -80,6 +94,13 @@ public class LiquidationMonitorService {
         } catch (Exception ex) {
             log.warn("Auto-exit sweep skipped due to error: {}", ex.getMessage());
         }
+    }
+
+    public List<LiquidatedPositionEvent> checkAndPublishIfEnabled(UUID ownerId, UUID sessionId) {
+        if (!enabled) {
+            return List.of();
+        }
+        return checkAndPublish(ownerId, sessionId);
     }
 
     public List<LiquidatedPositionEvent> checkAndPublish(UUID ownerId, UUID sessionId) {

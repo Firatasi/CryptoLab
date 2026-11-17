@@ -25,14 +25,19 @@ import {
   Button,
   Card,
   CardHeader,
-  SideBadge,
 } from '@/shared/ui/Primitives';
 import { FieldGroup, SelectInput, TextInput } from '@/shared/ui/FormControls';
 import { ErrorBanner } from '@/shared/ui/Feedback';
 import type {
   AnalysisJobStatus,
+  AnalysisRiskLevel,
+  AnalysisView,
   ExplanationStatus,
   HorizonSeconds,
+  InstrumentItem,
+  MarketSnapshot,
+  PositionSide,
+  ProposalView,
 } from '@/shared/contracts/types';
 import type { AiProposalSeed } from '@/features/trading/OrderTicket';
 
@@ -56,6 +61,302 @@ function ensureUuid(val: string, fallback: string): string {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
     ? val
     : fallback;
+}
+
+function priceScaleFor(refPrice: number): number {
+  if (refPrice < 1) return 5;
+  if (refPrice < 10) return 4;
+  if (refPrice < 500) return 3;
+  return 2;
+}
+
+function formatFixedPrice(value: number, scale: number): string {
+  const minTick = Math.pow(10, -scale);
+  return Math.max(minTick, value).toFixed(scale);
+}
+
+function sessionMaxLevFromPolicy(riskPolicyId?: string | null): number {
+  if (riskPolicyId === '99999999-9999-4999-8999-999999999998') return 5;
+  if (riskPolicyId === '99999999-9999-4999-8999-999999999997') return 50;
+  return 20;
+}
+
+function buildWaitCandidateProposal(params: {
+  analysis: AnalysisView;
+  riskLevel: AnalysisRiskLevel;
+  riskPolicyId?: string | null;
+  instrumentMeta?: InstrumentItem;
+  waitQuote?: MarketSnapshot | null;
+  symbolHint?: string;
+}): ProposalView {
+  const { analysis, riskLevel, riskPolicyId, instrumentMeta, waitQuote, symbolHint } = params;
+  const exp = analysis.explanation ?? '';
+  const side: PositionSide = /\bSHORT\b|Düşüş\s*\(SHORT\)/i.test(exp) ? 'SHORT' : 'LONG';
+
+  const refMatch = exp.match(/Referans Fiyat:\s*([0-9]+(?:\.[0-9]+)?)/i);
+  const quoteRef = Number(waitQuote?.markPrice || waitQuote?.lastPrice || 0);
+  const upperSym = (symbolHint || instrumentMeta?.symbol || '').toUpperCase();
+  const fallbackSymbolRef = upperSym.includes('BTC')
+    ? 64250
+    : upperSym.includes('ETH')
+      ? 3450
+      : upperSym.includes('SOL')
+        ? 180
+        : 100;
+  const rawRef = refMatch ? Number(refMatch[1]) : 0;
+  const refPrice = rawRef > 0 ? rawRef : quoteRef > 0 ? quoteRef : fallbackSymbolRef;
+  const scale = priceScaleFor(refPrice);
+
+  const absAtrMatch = exp.match(/\bATR:\s*([0-9]+(?:\.[0-9]+)?)/i);
+  const pctAtrMatch = exp.match(/Oynaklık\s*\(ATR\):\s*%([0-9]+(?:\.[0-9]+)?)/i);
+  const rawAtr = absAtrMatch
+    ? Number(absAtrMatch[1])
+    : pctAtrMatch
+      ? refPrice * (Number(pctAtrMatch[1]) / 100)
+      : 0;
+  const verifiedAtr = rawAtr > 0 ? rawAtr : refPrice * 0.008;
+
+  const bandMatch = exp.match(/SL:\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*TP:\s*([0-9]+(?:\.[0-9]+)?)/i);
+  const parsedSl = bandMatch ? Number(bandMatch[1]) : 0;
+  const parsedTp = bandMatch ? Number(bandMatch[2]) : 0;
+  const validDirectionalBand =
+    parsedSl > 0 &&
+    parsedTp > 0 &&
+    (side === 'LONG' ? parsedSl < refPrice && parsedTp > refPrice : parsedSl > refPrice && parsedTp < refPrice);
+
+  const atrFrac = Math.min(0.12, Math.max(0.0012, verifiedAtr / refPrice));
+  const slMult = riskLevel === 'LOW' ? 1.55 : riskLevel === 'HIGH' ? 1.85 : 1.7;
+  const minSlPct =
+    analysis.horizonSeconds <= 60
+      ? 0.0032
+      : analysis.horizonSeconds <= 900
+        ? 0.0048
+        : analysis.horizonSeconds <= 3600
+          ? 0.0072
+          : analysis.horizonSeconds <= 86400
+            ? 0.0125
+            : 0.022;
+  const slDistPct = Math.min(0.085, Math.max(minSlPct, atrFrac * slMult));
+  const minTpPct =
+    analysis.horizonSeconds <= 60
+      ? 0.0042
+      : analysis.horizonSeconds <= 900
+        ? 0.0056
+        : analysis.horizonSeconds <= 3600
+          ? 0.009
+          : analysis.horizonSeconds <= 86400
+            ? 0.017
+            : 0.032;
+  const rrRatio = riskLevel === 'LOW' ? 1.65 : riskLevel === 'HIGH' ? 1.8 : 1.7;
+  const tpDistPct = Math.min(0.22, Math.max(minTpPct, slDistPct * rrRatio));
+
+  const slNum = validDirectionalBand
+    ? parsedSl
+    : side === 'LONG'
+      ? refPrice * (1 - slDistPct)
+      : refPrice * (1 + slDistPct);
+  const tpNum = validDirectionalBand
+    ? parsedTp
+    : side === 'LONG'
+      ? refPrice * (1 + tpDistPct)
+      : refPrice * (1 - tpDistPct);
+
+  const effectiveSlPct = Math.max(0.002, Math.abs(refPrice - slNum) / refPrice);
+  const liqSafeCap = Math.max(1, Math.floor(1 / (effectiveSlPct * 2.5 + 0.012)));
+  const instMax = Math.max(1, Math.floor(Number(instrumentMeta?.maxLeverage ?? '20') || 20));
+  const sessMax = sessionMaxLevFromPolicy(riskPolicyId);
+  const baseRiskLev = riskLevel === 'LOW' ? 3 : riskLevel === 'HIGH' ? 8 : 5;
+  const levMatch = exp.match(/Önerilen Kaldıraç:\s*([0-9]+)x/i);
+  const rawLev = levMatch ? Number(levMatch[1]) : baseRiskLev;
+  const safeLev = Math.max(1, Math.min(sessMax, instMax, liqSafeCap, Math.floor(rawLev || 2)));
+
+  return {
+    proposalId: analysis.id,
+    revision: 1,
+    ownerId: analysis.ownerId,
+    sessionId: analysis.sessionId,
+    instrumentId: analysis.instrumentId,
+    generation: 1,
+    policyVersion: 'quant-adaptive-v2-wait-override',
+    modelBundleId: analysis.modelBundleId ?? '00000000-0000-4000-8000-000000000000',
+    featureSnapshotId: analysis.featureSnapshotId ?? '00000000-0000-4000-8000-000000000000',
+    intent: {
+      side,
+      orderType: 'MARKET',
+      limitPrice: null,
+      stopLoss: formatFixedPrice(slNum, scale),
+      takeProfit: formatFixedPrice(tpNum, scale),
+      suggestedLeverage: String(safeLev),
+      horizonSeconds: analysis.horizonSeconds,
+      expiryPolicy: 'CLOSE_AT_DEADLINE',
+      referencePrice: formatFixedPrice(refPrice, scale),
+      verifiedAtr: formatFixedPrice(verifiedAtr, scale),
+    },
+    validUntil: analysis.updatedAt,
+    state: 'WAIT_CANDIDATE',
+  };
+}
+
+function parseSignalConfidencePct(explanation?: string | null): number | null {
+  const exp = explanation ?? '';
+  if (!exp) return null;
+  const confTrMatch = exp.match(/Sinyal Güveni:\s*%([0-9]+(?:\.[0-9]+)?)/i);
+  if (confTrMatch) {
+    const val = Number(confTrMatch[1]);
+    return Number.isFinite(val) ? Math.round(Math.min(100, Math.max(0, val))) : null;
+  }
+  const confRawMatch = exp.match(/\bsignalConfidence=([0-9]+(?:\.[0-9]+)?)/i);
+  if (confRawMatch) {
+    const raw = Number(confRawMatch[1]);
+    if (!Number.isFinite(raw)) return null;
+    const scaled = raw <= 1 ? raw * 100 : raw;
+    return Math.round(Math.min(100, Math.max(0, scaled)));
+  }
+  return null;
+}
+
+function SignalConfidenceBar({ pct }: { pct: number | null }) {
+  if (pct === null) return null;
+
+  const tier =
+    pct >= 65
+      ? {
+          label: 'Güçlü',
+          badgeCls: 'border-emerald-400 bg-emerald-100 text-emerald-900',
+          barCls: 'bg-emerald-600',
+        }
+      : pct >= 50
+        ? {
+            label: 'Orta',
+            badgeCls: 'border-amber-400 bg-amber-100 text-amber-900',
+            barCls: 'bg-amber-500',
+          }
+        : {
+            label: 'Zayıf',
+            badgeCls: 'border-rose-400 bg-rose-100 text-rose-900',
+            barCls: 'bg-rose-600',
+          };
+
+  return (
+    <div
+      data-testid="signal-confidence-panel"
+      className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-black/10 pt-2.5"
+    >
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-[#525252]">
+          Sinyal Güveni
+        </span>
+        <span
+          data-testid="signal-confidence-value"
+          className={`inline-flex items-center border px-2 py-0.5 font-mono text-xs font-bold tabular-nums ${tier.badgeCls}`}
+        >
+          %{pct}
+        </span>
+        <span className="text-[11px] font-medium text-[#525252]">· {tier.label}</span>
+      </div>
+      <div
+        className="h-2 w-full max-w-[180px] overflow-hidden border border-neutral-300 bg-white/80"
+        role="progressbar"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={`Sinyal Güveni yüzde ${pct}`}
+      >
+        <div
+          className={`h-full transition-all duration-300 ${tier.barCls}`}
+          style={{ width: `${Math.max(4, pct)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ProposalSuggestionCard({
+  proposal,
+  onTransfer,
+  isWaitCandidate = false,
+}: {
+  proposal: ProposalView;
+  onTransfer: () => void;
+  isWaitCandidate?: boolean;
+}) {
+  const directionalSide = isWaitCandidate ? null : proposal.intent.side;
+  const cardCls =
+    directionalSide === 'LONG'
+      ? 'border-2 border-emerald-600 bg-white'
+      : directionalSide === 'SHORT'
+        ? 'border-2 border-rose-600 bg-white'
+        : 'border-[#0a0a0a] bg-white';
+  const cellCls =
+    directionalSide === 'LONG'
+      ? 'rounded-none border border-emerald-200 bg-emerald-50/40 p-2.5'
+      : directionalSide === 'SHORT'
+        ? 'rounded-none border border-rose-200 bg-rose-50/40 p-2.5'
+        : 'rounded-none border border-[#e5e5e5] bg-[#f5f5f5] p-2.5';
+  const sideTextCls =
+    directionalSide === 'LONG'
+      ? 'mt-1 font-mono font-bold text-emerald-700'
+      : directionalSide === 'SHORT'
+        ? 'mt-1 font-mono font-bold text-rose-700'
+        : 'mt-1 font-mono font-semibold text-[#0a0a0a]';
+  const btnCls =
+    directionalSide === 'LONG'
+      ? 'border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800'
+      : directionalSide === 'SHORT'
+        ? 'border-rose-700 bg-rose-600 text-white hover:bg-rose-700 active:bg-rose-800'
+        : '';
+
+  return (
+    <Card className={cardCls} data-testid="ai-proposal-suggestion-card">
+      <CardHeader
+        title={isWaitCandidate ? 'Aday AI Emir Önerisi (WAIT Üzerine Kullanıcı Tercihi)' : 'AI Emir Önerisi'}
+        subtitle={
+          isWaitCandidate
+            ? 'AI güvenlik nedeniyle beklemeyi önerse de mevcut piyasa eğilimine göre hesaplanan planı inceleyip isterseniz emir formuna aktarabilirsiniz.'
+            : 'Bu öneriyi emir formuna aktararak sunucu yürütme planını inceleyip onaylayabilirsiniz.'
+        }
+        action={
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={onTransfer}
+            className={btnCls}
+            data-testid="transfer-proposal-btn"
+          >
+            Bu Öneriyi Emir Formuna Aktar
+          </Button>
+        }
+      />
+      <div className="grid grid-cols-2 gap-3 p-4 text-xs sm:grid-cols-4">
+        <div className={cellCls}>
+          <div className="text-[#737373]">Önerilen Yön / Tip</div>
+          <div className={sideTextCls}>
+            {proposal.intent.side} · {proposal.intent.orderType}
+          </div>
+        </div>
+        <div className={cellCls}>
+          <div className="text-[#737373]">Önerilen Kaldıraç</div>
+          <div className="mt-1 font-mono font-semibold text-[#0a0a0a]">
+            {proposal.intent.suggestedLeverage}x
+          </div>
+        </div>
+        <div className={cellCls}>
+          <div className="text-[#737373]">Zarar Durdur / Kâr Al</div>
+          <div className="mt-1 font-mono text-[#0a0a0a]">
+            SL: {formatPrice(proposal.intent.stopLoss)} | TP:{' '}
+            {formatPrice(proposal.intent.takeProfit)}
+          </div>
+        </div>
+        <div className={cellCls}>
+          <div className="text-[#737373]">Referans Fiyat / ATR</div>
+          <div className="mt-1 font-mono font-semibold text-[#0a0a0a]">
+            {formatPrice(proposal.intent.referencePrice)} (ATR:{' '}
+            {formatPrice(proposal.intent.verifiedAtr)})
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 const TERMINAL_ANALYSIS_STATUSES: AnalysisJobStatus[] = [
@@ -93,6 +394,7 @@ export function AnalysisPage() {
   const [horizonSeconds, setHorizonSeconds] = useState<HorizonSeconds>(3600);
   const [riskLevel, setRiskLevel] = useState<'LOW' | 'MEDIUM' | 'HIGH'>('MEDIUM');
   const [riskOverridden, setRiskOverridden] = useState(false);
+  const [waitHeldAnalysisId, setWaitHeldAnalysisId] = useState<string | null>(null);
   const [analysisSymbolMap, setAnalysisSymbolMap] = useState<Record<string, string>>(() => {
     const persisted = loadPersistedJobs(user?.id);
     return persisted.analysisSymbolById ?? {};
@@ -197,6 +499,22 @@ export function AnalysisPage() {
       (analysisQuery.data?.action === 'LONG' || analysisQuery.data?.action === 'SHORT'),
   });
 
+  const selectedInstrumentMeta = instruments.find((i) => i.instrumentId === instrumentId);
+  const isWaitSucceeded =
+    analysisQuery.data?.status === 'SUCCEEDED' && analysisQuery.data?.action === 'WAIT';
+  const waitQuoteInstrumentKey =
+    (analysisQuery.data && analysisSymbolMap[analysisQuery.data.id]) ??
+    (analysisQuery.data && UUID_TO_SYMBOL[analysisQuery.data.instrumentId.toLowerCase()]) ??
+    selectedInstrumentMeta?.symbol ??
+    analysisQuery.data?.instrumentId ??
+    null;
+  const waitQuoteQuery = useQuery({
+    queryKey: queryKeys.market.quote(waitQuoteInstrumentKey ?? 'none'),
+    queryFn: ({ signal }) => marketApi.getSnapshot(waitQuoteInstrumentKey!, signal),
+    enabled: Boolean(isWaitSucceeded && waitQuoteInstrumentKey),
+    retry: false,
+  });
+
   const startAnalysisMutation = useMutation({
     mutationFn: async () => {
       const matched = instruments.find(
@@ -223,14 +541,35 @@ export function AnalysisPage() {
       };
     },
     onSuccess: (res) => {
+      setWaitHeldAnalysisId(null);
       setAnalysisSymbolMap((prev) => ({ ...prev, [res.analysisId]: res.symbol }));
       setActiveAnalysisId(res.analysisId);
     },
   });
 
   const analysis = analysisQuery.data;
+  const signalConfidencePct = parseSignalConfidencePct(analysis?.explanation);
   const proposal = proposalQuery.data;
-  const selectedInstrumentMeta = instruments.find((i) => i.instrumentId === instrumentId);
+  const waitCandidateProposal =
+    analysis && analysis.status === 'SUCCEEDED' && analysis.action === 'WAIT' && !proposal
+      ? buildWaitCandidateProposal({
+          analysis,
+          riskLevel,
+          riskPolicyId: sessionQuery.data?.riskPolicyId,
+          instrumentMeta:
+            instruments.find(
+              (i) =>
+                i.instrumentId.toUpperCase() === analysis.instrumentId.toUpperCase() ||
+                i.symbol.toUpperCase() === analysis.instrumentId.toUpperCase(),
+            ) ?? selectedInstrumentMeta,
+          waitQuote: waitQuoteQuery.data ?? null,
+          symbolHint:
+            analysisSymbolMap[analysis.id] ??
+            UUID_TO_SYMBOL[analysis.instrumentId.toLowerCase()] ??
+            selectedInstrumentMeta?.symbol,
+        })
+      : null;
+  const effectiveProposal = proposal ?? waitCandidateProposal;
 
   useEffect(() => {
     if (!analysis?.id || !analysis.proposalId) return;
@@ -245,33 +584,33 @@ export function AnalysisPage() {
   }, [analysis?.id, analysis?.instrumentId, analysis?.proposalId, analysisSymbolMap]);
 
   const handleTransferProposalToTicket = () => {
-    if (!proposal) return;
+    if (!effectiveProposal) return;
     const proposalMatchedMeta = instruments.find(
       (i) =>
-        i.instrumentId.toUpperCase() === proposal.instrumentId.toUpperCase() ||
-        i.symbol.toUpperCase() === proposal.instrumentId.toUpperCase(),
+        i.instrumentId.toUpperCase() === effectiveProposal.instrumentId.toUpperCase() ||
+        i.symbol.toUpperCase() === effectiveProposal.instrumentId.toUpperCase(),
     );
     const transferInstrument =
-      analysisSymbolMap[proposal.proposalId] ??
+      analysisSymbolMap[effectiveProposal.proposalId] ??
       (analysis ? analysisSymbolMap[analysis.id] : undefined) ??
-      UUID_TO_SYMBOL[proposal.instrumentId.toLowerCase()] ??
+      UUID_TO_SYMBOL[effectiveProposal.instrumentId.toLowerCase()] ??
       (analysis ? UUID_TO_SYMBOL[analysis.instrumentId.toLowerCase()] : undefined) ??
       proposalMatchedMeta?.symbol ??
-      proposal.instrumentId;
-    const normalizedLimit = toDecimalInputString(proposal.intent.limitPrice, 8);
+      effectiveProposal.instrumentId;
+    const normalizedLimit = toDecimalInputString(effectiveProposal.intent.limitPrice, 8);
     const seed: AiProposalSeed = {
-      proposalId: proposal.proposalId,
-      revision: proposal.revision,
+      proposalId: effectiveProposal.proposalId,
+      revision: effectiveProposal.revision,
       symbol: transferInstrument,
-      side: proposal.intent.side,
-      orderType: proposal.intent.orderType,
+      side: effectiveProposal.intent.side,
+      orderType: effectiveProposal.intent.orderType,
       limitPrice: normalizedLimit ? normalizedLimit : null,
-      stopLoss: toDecimalInputString(proposal.intent.stopLoss, 8),
-      takeProfit: toDecimalInputString(proposal.intent.takeProfit, 8),
-      suggestedLeverage: toDecimalInputString(proposal.intent.suggestedLeverage, 2) || '2',
-      referenceEntry: toDecimalInputString(proposal.intent.referencePrice, 8) || null,
-      horizonSeconds: proposal.intent.horizonSeconds,
-      expiryPolicy: proposal.intent.expiryPolicy,
+      stopLoss: toDecimalInputString(effectiveProposal.intent.stopLoss, 8),
+      takeProfit: toDecimalInputString(effectiveProposal.intent.takeProfit, 8),
+      suggestedLeverage: toDecimalInputString(effectiveProposal.intent.suggestedLeverage, 2) || '2',
+      referenceEntry: toDecimalInputString(effectiveProposal.intent.referencePrice, 8) || null,
+      horizonSeconds: effectiveProposal.intent.horizonSeconds,
+      expiryPolicy: effectiveProposal.intent.expiryPolicy,
     };
     navigate(
       `/trade/${encodeURIComponent(sessionId)}?instrumentId=${encodeURIComponent(
@@ -430,7 +769,6 @@ export function AnalysisPage() {
                     <option value="900">15 Dakika</option>
                     <option value="3600">1 Saat</option>
                     <option value="86400">1 Gün</option>
-                    <option value="604800">1 Hafta</option>
                   </SelectInput>
                 )}
               </FieldGroup>
@@ -630,15 +968,35 @@ export function AnalysisPage() {
                         <div className="flex items-center gap-2">
                           <Badge tone="wait">KARAR: WAIT (EKONOMİK ÇEKİMSERLİK)</Badge>
                           <span className="text-xs font-medium text-[#0a0a0a]">
-                            İşlem Açılmaması Öneriliyor
+                            İşlem Açılmaması Öneriliyor · Karar Size Bırakıldı
                           </span>
                         </div>
+                        <Button
+                          variant={waitHeldAnalysisId === analysis.id ? 'primary' : 'secondary'}
+                          size="sm"
+                          onClick={() => setWaitHeldAnalysisId(analysis.id)}
+                          data-testid="wait-hold-btn"
+                        >
+                          {waitHeldAnalysisId === analysis.id
+                            ? 'Beklemede Kalındı (WAIT)'
+                            : 'WAIT — Beklemede Kal'}
+                        </Button>
                       </div>
                       <p className="mt-2 text-xs text-[#525252]">
                         {analysis.explanation
                           ? analysis.explanation
                           : 'Karar motoru maliyet, likidite veya belirsizlik kısıtları nedeniyle seçili risk seviyesinde pozisyon açmamanın daha güvenli olduğunu belirledi.'}
                       </p>
+                      <SignalConfidenceBar pct={signalConfidencePct} />
+                      {waitHeldAnalysisId === analysis.id && (
+                        <div
+                          role="status"
+                          data-testid="wait-held-notice"
+                          className="mt-2.5 border border-[#0a0a0a] bg-white px-3 py-2 text-[11px] font-medium text-[#0a0a0a]"
+                        >
+                          AI tavsiyesine uyularak beklemede kalma tercih edildi. Fikrinizi değiştirirseniz aşağıdaki aday emir önerisini terminale aktarabilirsiniz.
+                        </div>
+                      )}
                       {riskLevel !== 'HIGH' && (
                         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#e5e5e5] pt-2.5">
                           <span className="text-[11px] text-[#525252]">
@@ -657,6 +1015,14 @@ export function AnalysisPage() {
                         </div>
                       )}
                     </div>
+
+                    {effectiveProposal && (
+                      <ProposalSuggestionCard
+                        proposal={effectiveProposal}
+                        onTransfer={handleTransferProposalToTicket}
+                        isWaitCandidate
+                      />
+                    )}
                   </div>
                 )}
 
@@ -666,67 +1032,43 @@ export function AnalysisPage() {
                     <div className="mt-4 space-y-4">
                       <div
                         data-testid="analysis-directional-card"
-                        className={`rounded-none border p-4 ${
+                        className={`rounded-none border-2 p-4 ${
                           analysis.action === 'LONG'
-                            ? 'border-[#0a0a0a] bg-[#f5f5f5]'
-                            : 'border-[#dc2626] bg-red-50'
+                            ? 'border-emerald-600 bg-emerald-50'
+                            : 'border-rose-600 bg-rose-50'
                         }`}
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex items-center gap-2">
-                            <SideBadge side={analysis.action} />
+                            <span
+                              className={`inline-flex items-center gap-1 border px-2.5 py-0.5 font-mono text-xs font-bold uppercase tracking-widest text-white ${
+                                analysis.action === 'LONG'
+                                  ? 'border-emerald-700 bg-emerald-600'
+                                  : 'border-rose-700 bg-rose-600'
+                              }`}
+                            >
+                              <span aria-hidden="true">
+                                {analysis.action === 'LONG' ? '▲' : '▼'}
+                              </span>{' '}
+                              {analysis.action}
+                            </span>
                           </div>
-                          <span className="text-xs text-[#525252]">
+                          <span
+                            className={`text-xs font-medium ${
+                              analysis.action === 'LONG' ? 'text-emerald-800' : 'text-rose-800'
+                            }`}
+                          >
                             AI Kantitatif Piyasa Önerisi
                           </span>
                         </div>
+                        <SignalConfidenceBar pct={signalConfidencePct} />
                       </div>
 
-                      {proposal && (
-                        <Card className="border-[#0a0a0a] bg-white">
-                          <CardHeader
-                            title="AI Emir Önerisi"
-                            subtitle="Bu öneriyi emir formuna aktararak sunucu yürütme planını inceleyip onaylayabilirsiniz."
-                            action={
-                              <Button
-                                variant="primary"
-                                size="sm"
-                                onClick={handleTransferProposalToTicket}
-                                data-testid="transfer-proposal-btn"
-                              >
-                                Bu Öneriyi Emir Formuna Aktar
-                              </Button>
-                            }
-                          />
-                          <div className="grid grid-cols-2 gap-3 p-4 text-xs sm:grid-cols-4">
-                            <div className="rounded-none border border-[#e5e5e5] bg-[#f5f5f5] p-2.5">
-                              <div className="text-[#737373]">Önerilen Yön / Tip</div>
-                              <div className="mt-1 font-mono font-semibold text-[#0a0a0a]">
-                                {proposal.intent.side} · {proposal.intent.orderType}
-                              </div>
-                            </div>
-                            <div className="rounded-none border border-[#e5e5e5] bg-[#f5f5f5] p-2.5">
-                              <div className="text-[#737373]">Önerilen Kaldıraç</div>
-                              <div className="mt-1 font-mono font-semibold text-[#0a0a0a]">
-                                {proposal.intent.suggestedLeverage}x
-                              </div>
-                            </div>
-                            <div className="rounded-none border border-[#e5e5e5] bg-[#f5f5f5] p-2.5">
-                              <div className="text-[#737373]">Zarar Durdur / Kâr Al</div>
-                              <div className="mt-1 font-mono text-[#0a0a0a]">
-                                SL: {formatPrice(proposal.intent.stopLoss)} | TP:{' '}
-                                {formatPrice(proposal.intent.takeProfit)}
-                              </div>
-                            </div>
-                            <div className="rounded-none border border-[#e5e5e5] bg-[#f5f5f5] p-2.5">
-                              <div className="text-[#737373]">Referans Fiyat / ATR</div>
-                              <div className="mt-1 font-mono font-semibold text-[#0a0a0a]">
-                                {formatPrice(proposal.intent.referencePrice)} (ATR:{' '}
-                                {formatPrice(proposal.intent.verifiedAtr)})
-                              </div>
-                            </div>
-                          </div>
-                        </Card>
+                      {effectiveProposal && (
+                        <ProposalSuggestionCard
+                          proposal={effectiveProposal}
+                          onTransfer={handleTransferProposalToTicket}
+                        />
                       )}
                     </div>
                   )}

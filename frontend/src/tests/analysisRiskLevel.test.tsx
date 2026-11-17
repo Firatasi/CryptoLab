@@ -110,6 +110,8 @@ describe('AnalysisPage riskLevel & horizon optimization selector', () => {
       expect(highBtn.getAttribute('aria-pressed')).toBe('true');
     });
     expect(screen.getByText(/Oturum Sınırı: 50x/)).toBeTruthy();
+    expect(screen.getByRole('option', { name: '1 Gün' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: '1 Hafta' })).toBeNull();
 
     fireEvent.click(lowBtn);
     expect(lowBtn.getAttribute('aria-pressed')).toBe('true');

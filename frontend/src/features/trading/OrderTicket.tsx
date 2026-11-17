@@ -48,12 +48,17 @@ import {
   type OrderSizingDiagnosis,
   buildLiquidationExceededMessage,
   diagnoseOrderSizing,
+  estimateRoundTripFeeUsd,
   formatFixedDecimal,
+  maxSafeMarginBudgetForAvailableBalance,
   parseFiniteDecimal,
   pnlUsdFromTriggerPrice,
+  resolveOrderFeeRates,
   stepDecimals,
   stopLossPriceFromUsd,
   takeProfitPriceFromUsd,
+  validateBracketPriceDirection,
+  validatePriceTickAlignment,
   validateStopLossPriceAgainstLiquidation,
 } from './orderBracketMath';
 
@@ -84,6 +89,7 @@ export interface OrderTicketProps {
   sessionId: string;
   instrument: InstrumentItem | null;
   sessionStatus?: string;
+  sessionRuleProfileId?: string | null;
   sessionRiskPolicyId?: string | null;
   availableBalance?: string | null;
   marketSnapshot?: MarketSnapshot | null;
@@ -107,6 +113,7 @@ export function OrderTicket({
   sessionId,
   instrument,
   sessionStatus = 'RUNNING',
+  sessionRuleProfileId = null,
   sessionRiskPolicyId = null,
   availableBalance = null,
   marketSnapshot = null,
@@ -145,19 +152,35 @@ export function OrderTicket({
   const [activePlan, setActivePlan] = useState<ExecutionPlan | null>(null);
   const [acceptedCommand, setAcceptedCommand] = useState<AcceptedOrderResponse | null>(null);
 
-  // Seçili enstrüman değiştiğinde eski enstrümana ait planı derhal temizle
+  // Seçili enstrüman değiştiğinde eski enstrümana ait planı ve farklı coine ait eski fiyat seviyelerini temizle
   const prevInstrumentIdRef = useRef<string | null>(instrument?.instrumentId ?? null);
   useEffect(() => {
+    const prevId = prevInstrumentIdRef.current;
     const nextId = instrument?.instrumentId ?? null;
-    if (prevInstrumentIdRef.current !== nextId) {
+    if (prevId !== nextId) {
       prevInstrumentIdRef.current = nextId;
+      if (prevId !== null && nextId !== null) {
+        const seedSym = aiProposalSeed?.symbol?.toUpperCase();
+        const matchesSeed = Boolean(
+          seedSym &&
+            instrument &&
+            (seedSym === instrument.symbol.toUpperCase() ||
+              seedSym === instrument.instrumentId.toUpperCase()),
+        );
+        if (!matchesSeed) {
+          setLimitPrice('');
+          if (slMode === 'PRICE') setStopLoss('');
+          if (tpMode === 'PRICE') setTakeProfit('');
+        }
+      }
       setActivePlan(null);
       setAcceptedCommand(null);
       setApiError(null);
+      setValidationError(null);
       setStage('EDITING');
       submitKeyTrackerRef.current.reset();
     }
-  }, [instrument?.instrumentId]);
+  }, [aiProposalSeed?.symbol, instrument, slMode, tpMode]);
 
   // AI önerisi aktarıldığında alanları doldur ve kaynağı AI_PROPOSAL olarak işaretle
   useEffect(() => {
@@ -192,11 +215,20 @@ export function OrderTicket({
 
   const parsedAvailableBalance = useMemo(() => parseFiniteDecimal(availableBalance), [availableBalance]);
   const parsedMarginBudget = useMemo(() => parseFiniteDecimal(marginBudget), [marginBudget]);
-  const isBudgetAboveAvailable =
-    parsedAvailableBalance !== null &&
-    parsedMarginBudget !== null &&
-    parsedAvailableBalance > 0 &&
-    parsedMarginBudget > parsedAvailableBalance;
+  const parsedLeverageNum = useMemo(() => parseFiniteDecimal(leverage), [leverage]);
+  const feeRates = useMemo(
+    () => resolveOrderFeeRates(sessionRuleProfileId, orderType),
+    [orderType, sessionRuleProfileId],
+  );
+  const maxBudgetForAvailableBalance = useMemo(
+    () =>
+      maxSafeMarginBudgetForAvailableBalance(
+        parsedAvailableBalance,
+        parsedLeverageNum,
+        feeRates.openRate,
+      ),
+    [feeRates.openRate, parsedAvailableBalance, parsedLeverageNum],
+  );
 
   const effectiveEntryPrice = useMemo(() => {
     if (orderType === 'LIMIT') {
@@ -224,18 +256,43 @@ export function OrderTicket({
     orderType,
   ]);
 
+  const resolvedLimitError = useMemo(() => {
+    if (orderType !== 'LIMIT' || !limitPrice.trim()) return null;
+    const parsed = parsePositiveDecimalInput(limitPrice, 8);
+    if (!parsed.valid) {
+      return `Limit Fiyatı: ${parsed.message}`;
+    }
+    return validatePriceTickAlignment(Number(parsed.normalized));
+  }, [limitPrice, orderType]);
+
   const sizingDiagnosis = useMemo(() => {
     return diagnoseOrderSizing({
       side,
       entryPrice: effectiveEntryPrice,
       marginBudget: parsedMarginBudget,
-      leverage: parseFiniteDecimal(leverage),
+      leverage: parsedLeverageNum,
       minNotionalUsd: parseFiniteDecimal(instrument?.minNotional ?? null) ?? undefined,
       availableBalance: parsedAvailableBalance,
+      ruleProfileId: sessionRuleProfileId,
+      orderType,
     });
-  }, [effectiveEntryPrice, instrument?.minNotional, leverage, parsedAvailableBalance, parsedMarginBudget, side]);
+  }, [
+    effectiveEntryPrice,
+    instrument?.minNotional,
+    orderType,
+    parsedAvailableBalance,
+    parsedLeverageNum,
+    parsedMarginBudget,
+    sessionRuleProfileId,
+    side,
+  ]);
 
   const orderSizing = sizingDiagnosis.ok ? sizingDiagnosis.estimate : null;
+  const isCashShortfall =
+    parsedAvailableBalance !== null &&
+    parsedAvailableBalance > 0 &&
+    ((parsedMarginBudget !== null && parsedMarginBudget > parsedAvailableBalance) ||
+      (orderSizing !== null && orderSizing.requiredCashUsd > parsedAvailableBalance));
   const effectiveMaxStopLossUsd = sizingDiagnosis.ok
     ? sizingDiagnosis.estimate.maxSafeStopLossUsd
     : sizingDiagnosis.budgetMaxSafeStopLossUsd;
@@ -270,6 +327,49 @@ export function OrderTicket({
       }),
     [effectiveEntryPrice, instrument?.baseAsset, side, sizingDiagnosis, takeProfit, tpMode]
   );
+
+  const slRoundTripFeeUsd = useMemo(() => {
+    if (!orderSizing || !resolvedSl.priceStr) return null;
+    const trigger = Number(resolvedSl.priceStr);
+    if (!(trigger > 0)) return null;
+    return estimateRoundTripFeeUsd({
+      quantity: orderSizing.quantity,
+      entryPrice: orderSizing.entryPrice,
+      triggerPrice: trigger,
+      openFeeRate: orderSizing.openFeeRate,
+      closeMarketFeeRate: orderSizing.closeMarketFeeRate,
+      fixedOpenFeeUsd: orderSizing.estimatedOpenFeeUsd,
+    });
+  }, [orderSizing, resolvedSl.priceStr]);
+
+  const tpRoundTripFeeUsd = useMemo(() => {
+    if (!orderSizing || !resolvedTp.priceStr) return null;
+    const trigger = Number(resolvedTp.priceStr);
+    if (!(trigger > 0)) return null;
+    return estimateRoundTripFeeUsd({
+      quantity: orderSizing.quantity,
+      entryPrice: orderSizing.entryPrice,
+      triggerPrice: trigger,
+      openFeeRate: orderSizing.openFeeRate,
+      closeMarketFeeRate: orderSizing.closeMarketFeeRate,
+      fixedOpenFeeUsd: orderSizing.estimatedOpenFeeUsd,
+    });
+  }, [orderSizing, resolvedTp.priceStr]);
+
+  const isTpNetNegativeAfterFees =
+    !resolvedTp.error &&
+    resolvedTp.usdEstimate !== null &&
+    tpRoundTripFeeUsd !== null &&
+    resolvedTp.usdEstimate <= tpRoundTripFeeUsd;
+
+  const liveRrRatio =
+    !resolvedSl.error &&
+    !resolvedTp.error &&
+    resolvedSl.usdEstimate !== null &&
+    resolvedTp.usdEstimate !== null &&
+    resolvedSl.usdEstimate > 0
+      ? Number((resolvedTp.usdEstimate / resolvedSl.usdEstimate).toFixed(2))
+      : null;
 
   /**
    * F04.4 & F07.4: Kullanıcı herhangi bir alanı değiştirdiğinde eski plan geçersiz kılınır;
@@ -434,6 +534,11 @@ export function OrderTicket({
           setValidationError(`Limit Fiyatı: ${parsedLimit.message}`);
           return;
         }
+        const limitTickErr = validatePriceTickAlignment(Number(parsedLimit.normalized));
+        if (limitTickErr) {
+          setValidationError(limitTickErr);
+          return;
+        }
         normalizedLimit = parsedLimit.normalized;
       }
 
@@ -458,7 +563,7 @@ export function OrderTicket({
         return;
       }
 
-      // Limit emirde bariz ters SL/TP uyarısı (BigInt ölçekli tam karşılaştırma)
+      // Limit emirde bariz ters SL ve TP uyarısı (BigInt ölçekli tam karşılaştırma)
       if (normalizedLimit) {
         if (
           side === 'LONG' &&
@@ -475,6 +580,24 @@ export function OrderTicket({
         ) {
           setValidationError(
             'SHORT limit emirde Stop-Loss fiyatı limit fiyatının üzerinde olmalıdır.'
+          );
+          return;
+        }
+        if (
+          side === 'LONG' &&
+          parsedTp.normalized &&
+          compareDecimalStrings(parsedTp.normalized, normalizedLimit) <= 0
+        ) {
+          setValidationError('LONG limit emirde Take-Profit fiyatı limit fiyatının üzerinde olmalıdır.');
+          return;
+        }
+        if (
+          side === 'SHORT' &&
+          parsedTp.normalized &&
+          compareDecimalStrings(parsedTp.normalized, normalizedLimit) >= 0
+        ) {
+          setValidationError(
+            'SHORT limit emirde Take-Profit fiyatı limit fiyatının altında olmalıdır.'
           );
           return;
         }
@@ -778,11 +901,9 @@ export function OrderTicket({
             <FieldGroup
               label="Teminat Bütçesi"
               hint={
-                isBudgetAboveAvailable && parsedAvailableBalance !== null
-                  ? `Kullanılabilir bakiye: ${parsedAvailableBalance.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} USDT · Likidasyon sınırı mevcut bakiyenize göre hesaplandı.`
-                  : source === 'AI_PROPOSAL' && originProposalId
-                    ? 'AI önerisi bütçesi sunucu risk politikasına göre belirlenir; kendi bütçeniz için tutarı düzenleyin.'
-                    : undefined
+                source === 'AI_PROPOSAL' && originProposalId
+                  ? 'AI önerisi bütçesi sunucu risk politikasına göre belirlenir; kendi bütçeniz için tutarı düzenleyin.'
+                  : undefined
               }
               required
             >
@@ -820,12 +941,44 @@ export function OrderTicket({
             </FieldGroup>
           </div>
 
+          {isCashShortfall && parsedAvailableBalance !== null && (
+            <div
+              data-testid="balance-shortfall-notice"
+              className="flex flex-wrap items-center justify-between gap-2 rounded-none border border-[#b45309] bg-amber-50 px-3 py-2 text-xs text-[#92400e]"
+            >
+              <span>
+                Kullanılabilir bakiye ({parsedAvailableBalance.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} USDT),
+                {orderSizing
+                  ? ` teminat + açılış komisyonu (${orderSizing.requiredCashUsd.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT) için yetersiz.`
+                  : ' girilen bütçe için yetersiz.'}
+              </span>
+              {maxBudgetForAvailableBalance !== null && maxBudgetForAvailableBalance > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMarginBudget(formatFixedDecimal(maxBudgetForAvailableBalance, 2));
+                    invalidateActivePlanOnEdit();
+                  }}
+                  className="shrink-0 rounded-none border border-[#92400e] bg-white px-2 py-1 text-[11px] font-semibold text-[#92400e] transition-colors hover:bg-[#92400e] hover:text-white"
+                >
+                  Bakiyeye Sığdır (~
+                  {maxBudgetForAvailableBalance.toLocaleString('tr-TR', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}{' '}
+                  USDT)
+                </button>
+              )}
+            </div>
+          )}
+
           {orderType === 'LIMIT' && (
-            <FieldGroup label="Limit Fiyatı" required>
+            <FieldGroup label="Limit Fiyatı" error={resolvedLimitError} required>
               {(id) => (
                 <DecimalInput
                   id={id}
                   value={limitPrice}
+                  hasError={Boolean(resolvedLimitError)}
                   onChange={(val) => {
                     setLimitPrice(val);
                     invalidateActivePlanOnEdit();
@@ -1120,6 +1273,19 @@ export function OrderTicket({
                           )}{' '}
                           ({leverage}x)
                         </div>
+                        <div className="font-sans text-[10px] text-[#525252]">
+                          Açılış Ücreti: ~
+                          {sizingDiagnosis.estimate.estimatedOpenFeeUsd.toLocaleString('tr-TR', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}{' '}
+                          USDT · Nakit:{' '}
+                          {sizingDiagnosis.estimate.requiredCashUsd.toLocaleString('tr-TR', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}{' '}
+                          USDT
+                        </div>
                       </div>
 
                       <div className="min-w-0">
@@ -1170,7 +1336,18 @@ export function OrderTicket({
                                 2
                               )
                             : '—'}
+                          {!resolvedSl.error && resolvedSl.usdEstimate !== null && slRoundTripFeeUsd !== null
+                            ? ` (Net ~-${(resolvedSl.usdEstimate + slRoundTripFeeUsd).toLocaleString('tr-TR', {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })})`
+                            : ''}
                         </span>
+                        {liveRrRatio !== null && (
+                          <span className="text-[10px] font-semibold text-[#525252]">
+                            R:R 1:{liveRrRatio.toFixed(2)}
+                          </span>
+                        )}
                         <span className="text-[#059669]">
                           TP:{' '}
                           {!resolvedTp.error && resolvedTp.usdEstimate !== null
@@ -1180,7 +1357,34 @@ export function OrderTicket({
                                 2
                               )
                             : '—'}
+                          {!resolvedTp.error && resolvedTp.usdEstimate !== null && tpRoundTripFeeUsd !== null
+                            ? ` (Net ${
+                                resolvedTp.usdEstimate - tpRoundTripFeeUsd >= 0 ? '~+' : '~-'
+                              }${Math.abs(resolvedTp.usdEstimate - tpRoundTripFeeUsd).toLocaleString('tr-TR', {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })})`
+                            : ''}
                         </span>
+                      </div>
+                    )}
+
+                    {isTpNetNegativeAfterFees && resolvedTp.usdEstimate !== null && tpRoundTripFeeUsd !== null && (
+                      <div
+                        data-testid="tp-fee-warning"
+                        className="border border-[#d97706] bg-amber-50 px-2.5 py-1.5 text-[11px] text-[#92400e]"
+                      >
+                        Kâr hedefi (~
+                        {resolvedTp.usdEstimate.toLocaleString('tr-TR', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}{' '}
+                        USDT), tahmini açılış + kapanış komisyonunu (~
+                        {tpRoundTripFeeUsd.toLocaleString('tr-TR', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}{' '}
+                        USDT) aşmadığı için tetiklenirse net zarar oluşabilir.
                       </div>
                     )}
 
@@ -1369,6 +1573,20 @@ function resolveBracketValue(params: {
     };
   }
   const numPrice = Number(parsedPrice.normalized);
+  const directionErr = validateBracketPriceDirection({
+    side,
+    kind,
+    referencePrice: effectiveEntryPrice,
+    triggerPrice: numPrice,
+  });
+  if (directionErr) {
+    return {
+      priceStr: null,
+      usdEstimate: null,
+      error: directionErr,
+      isLiquidationViolation: false,
+    };
+  }
   const liqErr = isSl ? validateStopLossPriceAgainstLiquidation(side, sizing, numPrice) : null;
   const usdEst = sizing ? pnlUsdFromTriggerPrice(side, sizing, numPrice, kind) : null;
   return {

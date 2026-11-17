@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Mail, RefreshCw, ShieldAlert, Users } from 'lucide-react';
 import type {
   AdminMessageStatus,
@@ -37,22 +37,41 @@ export function AdminPage() {
   const [error, setError] = useState<unknown>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const isMountedRef = useRef(true);
+  const stateEpochRef = useRef(0);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const loadOverview = useCallback(async (background = false) => {
+    const reqEpoch = ++stateEpochRef.current;
     if (background) {
       setRefreshing(true);
     } else {
       setLoading(true);
+      setError(null);
     }
-    setError(null);
     try {
       const data = await authApi.adminOverview();
+      if (!isMountedRef.current || stateEpochRef.current !== reqEpoch) {
+        return;
+      }
       setOverview(data);
+      setError(null);
     } catch (err) {
+      if (!isMountedRef.current || stateEpochRef.current !== reqEpoch) {
+        return;
+      }
       setError(err);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
@@ -65,10 +84,12 @@ export function AdminPage() {
   }, [loadOverview]);
 
   const handleStatusChange = async (id: string, nextStatus: AdminMessageStatus) => {
+    stateEpochRef.current += 1;
     setUpdatingId(id);
     setError(null);
     try {
       const updated = await authApi.updateAdminMessageStatus(id, nextStatus);
+      if (!isMountedRef.current) return;
       setOverview((prev) => {
         if (!prev) return prev;
         const nextMessages = prev.messages.map((item) =>
@@ -81,9 +102,13 @@ export function AdminPage() {
         };
       });
     } catch (err) {
-      setError(err);
+      if (isMountedRef.current) {
+        setError(err);
+      }
     } finally {
-      setUpdatingId(null);
+      if (isMountedRef.current) {
+        setUpdatingId(null);
+      }
     }
   };
 
@@ -123,7 +148,13 @@ export function AdminPage() {
         </Button>
       </div>
 
-      {error ? <ErrorBanner error={error} /> : null}
+      {error ? (
+        <ErrorBanner
+          error={error}
+          title="Yönetici paneli verileri alınamadı"
+          onRetry={() => void loadOverview(false)}
+        />
+      ) : null}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card className="p-4">
@@ -213,6 +244,12 @@ export function AdminPage() {
           {loading && !overview ? (
             <div className="py-10 text-center font-mono text-xs text-[#737373]">
               Yönetici verileri yükleniyor...
+            </div>
+          ) : error && !overview ? (
+            <div className="border border-dashed border-[#dc2626]/40 bg-red-50/40 py-10 text-center text-xs text-[#737373]">
+              İletişim formu kayıtları sunucudan alınamadı. Yukarıdaki{' '}
+              <strong className="font-semibold text-[#0a0a0a]">Tekrar Dene</strong> veya{' '}
+              <strong className="font-semibold text-[#0a0a0a]">Yenile</strong> butonunu kullanın.
             </div>
           ) : filteredMessages.length === 0 ? (
             <div className="border border-dashed border-[#d4d4d4] bg-[#fafafa] py-10 text-center text-xs text-[#737373]">
